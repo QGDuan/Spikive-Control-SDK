@@ -1,0 +1,9 @@
+<launch>
+  <arg name="drone_id" default="1"/>
+  <arg name="config_file" default="$(find spikive_control_sdk)/config/control_sdk.yaml"/>
+  <node pkg="spikive_control_sdk" type="spikive_control_sdk_node"
+        name="spikive_control_sdk_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)"/>
+    <param name="drone_id" value="$(arg drone_id)" type="int"/>
+  </node>
+</launch>

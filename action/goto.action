@@ -1,0 +1,19 @@
+# goal
+float32[3] position          # 项目原生局部坐标 [x,y,z]，与 GoalSet / 里程计一致；不做 NED 转换
+float32 speed                # 巡航速度 m/s；<=0 使用默认
+float32 arrival_total_dist   # 到达总距离阈值 m；<=0 使用配置值
+float32 arrival_horiz_dist   # 到达水平距离阈值 m；<=0 使用配置值
+float32 stable_time          # 连续满足阈值时长 s；<=0 使用配置值
+float32 timeout              # 超时 s
+---
+# result
+bool success
+uint8 error_code
+string message
+float32 final_distance       # 结束时刻到目标的距离 m
+---
+# feedback
+uint8 state                  # 1 NAVIGATING 2 AVOIDING 3 HOLDING 4 DONE
+float32 distance_total       # 到目标三维距离 m
+float32 distance_horizontal
+float32 current_speed

@@ -1,0 +1,23 @@
+# 无人机编号由 launch 的 drone_id 参数设置，默认 1。
+# 配置 SDK 通信与到达判据；不设置 px4ctrl 的高度、速度和任务超时。
+feedback_rate: 10.0
+
+topics:
+  control: /control
+  goal: /goal_with_id
+  drone_state: ""  # 留空时使用 /drone_{drone_id}_state
+  mavros_state: /mavros/state
+  extended_state: /mavros/extended_state
+  odometry: /mavros/local_position/odom
+  altitude: /mavros/altitude
+
+actions:
+  takeoff: /nav/flight/takeoff
+  land: /nav/flight/land
+  goto: /nav/flight/goto
+
+# Goto 请求中相应值 <=0 时使用以下默认值；不写入 Planner/px4ctrl 参数。
+goto:
+  arrival_total_dist: 0.30
+  arrival_horiz_dist: 0.25
+  stable_time: 1.0

@@ -1,0 +1,13 @@
+# goal
+float32 descend_speed    # 下降速度 m/s；<=0 默认
+float32 timeout
+---
+# result
+bool success
+uint8 error_code
+string message
+bool disarmed            # 是否已上锁
+---
+# feedback
+uint8 phase              # 1 DESCENDING 2 GROUND_DETECT 3 TOUCHDOWN 4 DISARMED
+float32 height           # 距地面高度 m
