@@ -1,5 +1,5 @@
 # SDK 补充定义：PDF 仅规定 /nav/localization/relocalize 为 Action，未给出字段。
-# 初始机体位姿位于已加载地图的原生 map 坐标系；不做 NED 转换。
+# 初始机体位姿位于已加载地图的原生 world 坐标系（frames/world）；不做坐标转换。
 geometry_msgs/PoseWithCovarianceStamped initial_pose
 ---
 bool success

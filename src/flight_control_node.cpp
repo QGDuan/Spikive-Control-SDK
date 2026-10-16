@@ -301,9 +301,10 @@ private:
       rejectGoto(goal, ERR_NOT_TAKEOFF, "Goto requires MAVROS IN_AIR; takeoff/landing transitions are not ready");
       return;
     }
-    if (!sdk_.hasPosition() || sdk_.odometry().header.stamp.isZero())
+    if (!sdk_.hasNavigationOdometry())
     {
-      rejectGoto(goal, ERR_POSE_INVALID, "Require stamped MAVROS odometry with finite xyz");
+      rejectGoto(goal, ERR_POSE_INVALID, "Require stamped navigation odometry with finite xyz on " +
+                 config_.navigation_odometry_topic + " in frame " + config_.world_frame);
       return;
     }
     // 按项目约定直接使用原生局部 xyz；目标与里程计的原点、坐标轴须由现有系统保持一致。
@@ -342,7 +343,7 @@ private:
     {
       return;
     }
-    if (!ready() || !sdk_.hasGoalSubscriber() || !sdk_.hasPosition() ||
+    if (!ready() || !sdk_.hasGoalSubscriber() || !sdk_.hasNavigationOdometry() ||
         sdk_.extendedState().landed_state != mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR)
     {
       goto_goal_.setAborted(makeGotoResult(false, ERR_PRECHECK_FAILED,
@@ -378,7 +379,7 @@ private:
   void updateTakeoff()
   {
     const auto& state = sdk_.droneState();
-    if (state.header.stamp <= command_stamp_)
+    if (!sdk_.connected() || state.header.stamp <= command_stamp_)
     {
       return;
     }
@@ -464,8 +465,8 @@ private:
     const auto unknown = std::numeric_limits<float>::quiet_NaN();
     goto_feedback_.distance_total = unknown;
     goto_feedback_.distance_horizontal = unknown;
-    const auto& odom = sdk_.odometry();
-    if (sdk_.hasPosition())
+    const auto& odom = sdk_.navigationOdometry();
+    if (sdk_.hasNavigationOdometry())
     {
       const double dx = goto_target_[0] - odom.pose.pose.position.x;
       const double dy = goto_target_[1] - odom.pose.pose.position.y;
@@ -473,8 +474,10 @@ private:
       goto_feedback_.distance_horizontal = static_cast<float>(std::hypot(dx, dy));
       goto_feedback_.distance_total = static_cast<float>(std::hypot(std::hypot(dx, dy), dz));
     }
-    const auto& v = odom.twist.twist.linear;
-    goto_feedback_.current_speed = std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z)
+    // fusion_repub 只填 pose，其默认零 twist 不能作为速度证据；模长仍取 MAVROS。
+    const auto& v = sdk_.odometry().twist.twist.linear;
+    goto_feedback_.current_speed = sdk_.hasOdometry() &&
+      std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z)
       ? static_cast<float>(std::hypot(std::hypot(v.x, v.y), v.z)) : unknown;
   }
 
@@ -494,8 +497,8 @@ private:
     }
     refreshGotoFeedback();
     const auto& state = sdk_.droneState();
-    const auto& odom = sdk_.odometry();
-    const bool arrived = sdk_.connected() && sdk_.hasPosition() &&
+    const auto& odom = sdk_.navigationOdometry();
+    const bool arrived = sdk_.connected() && sdk_.hasNavigationOdometry() &&
       sdk_.extendedState().landed_state == mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR &&
       state.header.stamp > command_stamp_ && odom.header.stamp > command_stamp_ &&
       state.reached && !state.landed &&

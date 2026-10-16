@@ -8,6 +8,8 @@
 
 最简命令行调用和 `rostopic echo` 监控见 [命令行测试 README](docs/README_命令行测试.md)。
 
+**0.6.0 坐标适配**：地图和初值使用 WayPoint 原生 `world`；Goto 距离读取 Planner 同源 `/drone_{id}_visual_slam/odom`。坐标关系、Orin 的 `drone_id:=2` 示例与验证记录见 [坐标对齐说明](docs/README_坐标对齐与验证.md)。这是接口与监视修正，不自动对齐飞控本地坐标。
+
 > Takeoff 当前完成了接口结构和现有控制链路的状态适配；请求高度、爬升速度、超时及稳定阶段尚未实现。具体见下方“Takeoff 与 PDF 逐项对照”，字段存在不代表对应能力已生效。
 
 ## 系统框图
@@ -26,6 +28,8 @@ flowchart LR
   M -->|连接、起降、上锁、里程计与净空| S
   S -->|PCD / 初始位姿| L[Spikive-SLAM global_match]
   L -->|地图回显 / 匹配状态 / 变换| S
+  L --> R[既有 fusion_repub]
+  R -->|world 定位里程计| S
   S -->|feedback / result / localization 状态| U
 ```
 
@@ -41,7 +45,7 @@ flowchart LR
 
 | 功能 | 输入与转发 | 完成条件 |
 | --- | --- | --- |
-| 起飞 | `/nav/flight/takeoff` → `/control`，`cmd=1` | 新的 `DroneState.tookoff=true` |
+| 起飞 | `/nav/flight/takeoff` → `/control`，`cmd=1` | 新的 `DroneState.tookoff=true`，MAVROS 连接有效 |
 | 降落 | `/nav/flight/land` → `/control`，`cmd=2` | 新的 `DroneState.landed=true` 且 MAVROS 为 `ON_GROUND`，连接有效 |
 | 目标点飞行 | `/nav/flight/goto` → `/control` 的 `cmd=4`，随后 `/goal_with_id` 的 `GoalSet` | 新 `reached=true`，且新里程计满足三维、水平距离阈值和稳定时长 |
 | 返航 | `/nav/flight/return_home` → `/control`，`cmd=3`；FlightManager 发布既有返航点 | 命令后先收到 `returned=false`，再收到更晚的 `returned=true && !landed`，连接有效且新 MAVROS 状态为 `IN_AIR` |
@@ -87,7 +91,7 @@ Takeoff、Land、Goto 的字段、类型、顺序保留 [V1.1 PDF](docs/specs/RO
 
 新增 [goto.action](action/goto.action)，入口 `/nav/flight/goto`，生成类型 `spikive_control_sdk/gotoAction`。Goal 6 个字段、Result 4 个字段、Feedback 4 个字段与 PDF §3.1.2 的类型、名称、顺序一致。
 
-**坐标按项目原生定义：`position=[x,y,z]` 直接转发为 `GoalSet.goal`。** 这是用户明确指定的 PDF 语义调整：不采用 PDF 注释中的 NED，不交换 x/y、不反转 z。它是局部坐标中的绝对目标，不是相对当前位置的位移。目标、Planner 和 MAVROS 里程计必须使用相同原点和坐标轴；SDK 不做 TF、原点对齐或航向标定。
+**坐标按项目原生定义：`position=[x,y,z]` 直接转发为 `GoalSet.goal`。** 这是用户明确指定的 PDF 语义调整：不采用 PDF 注释中的 NED，不交换 x/y、不反转 z。它是 `world` 中的绝对目标，不是相对当前位置的位移。距离使用与 Planner 同源的 `/drone_{id}_visual_slam/odom`，要求其 frame 等于 `frames/world`（默认 `world`）。SDK 不做 TF、原点对齐或航向标定；px4ctrl 仍读取 MAVROS 本地位置，实际执行要求后端坐标已对齐，不能由重定位成功推断。
 
 | PDF 字段 / 能力 | 状态 | 当前处理 |
 | --- | --- | --- |
@@ -98,16 +102,16 @@ Takeoff、Land、Goto 的字段、类型、顺序保留 [V1.1 PDF](docs/specs/RO
 | `stable_time` | 已完成样本判定 | 两个距离和控制器到达状态持续满足的观测时长；正值用请求，`<=0` 用 Config 的 1.0 s |
 | `timeout` | 预留 | 有限值均忽略；未实现任务超时 |
 | `success / error_code / message` | 已完成当前分支 | 成功 `0`；取消 `3`；拒绝 `4/6/12/19/20/21`；目标发出前条件变化中止 `12` |
-| `final_distance` | 已完成 | 结束时最新有效里程计到本请求目标的三维距离；无效位置或请求被拒绝时 NaN |
+| `final_distance` | 已完成 | 结束时最新有效导航里程计到本请求目标的三维距离；无效位置或请求被拒绝时 NaN |
 | `state` | 部分完成 | `1 NAVIGATING` → `3 HOLDING` → `4 DONE`；条件失去时回到 1；缺少避障状态来源，不输出 `2 AVOIDING` |
 | `distance_total / distance_horizontal` | 已完成 | 原生坐标差的三维 / XY 范数，m；无效位置为 NaN |
 | `current_speed` | 已完成 | MAVROS 里程计线速度的三维模长，m/s；无效速度为 NaN |
 
-Goto 要求 MAVROS `IN_AIR`、有效且带时间戳的 xyz，以及控制/目标话题均有订阅者；不要求 `tookoff=true`，因为控制器在轨迹飞行时会清除此标志。所有请求数值必须有限，否则返回 `19`。
+Goto 要求 MAVROS `IN_AIR`、导航里程计 frame 正确且有非零时间戳和有限 xyz，以及控制/目标话题均有订阅者；不要求 `tookoff=true`，因为控制器在轨迹飞行时会清除此标志。所有请求数值必须有限，否则返回 `19`。导航里程计缺失或无效返回 `4`，不会回退到 MAVROS 位置。速度模长仍取 MAVROS，避免把 SLAM 未填写的 twist 当成静止。
 
 转发顺序沿用 WayPoint：先发 `cmd=4`（Continue），用单次定时器等待 0.2 s，再发真实目标。FlightManager 在切换到 Continue 时会先发布当前位置，因此不能同时发送真实目标；0.2 s 是已有顺序约定，不是接收确认，负载下仍不能保证跨节点处理次序。等待期间取消会撤销尚未发送的目标，但不撤回已发送的 Continue。
 
-完成同时要求连接有效、MAVROS `IN_AIR`、命令之后的 `DroneState.reached && !landed`、命令之后的里程计、两个距离阈值和稳定时长。以两个消息时间戳的较小值累计时长；反馈定时器不会用静止缓存推进成功。任一到达条件不满足或观测时间倒退时重计。没有状态年龄/断流策略，样本间隔内是否连续满足无法证明；时间戳先后也不是目标 ACK。
+完成同时要求连接有效、MAVROS `IN_AIR`、命令之后的 `DroneState.reached && !landed`、命令之后的导航里程计、两个距离阈值和稳定时长。以两个消息时间戳的较小值累计时长；反馈定时器不会用静止缓存推进成功。任一到达条件不满足或观测时间倒退时重计。没有状态年龄/断流策略，样本间隔内是否连续满足无法证明；时间戳先后也不是目标 ACK。
 
 现有后端边界保留：`reached` 只有 XY 判据，所以 SDK 补算三维距离和稳定时长；SDK 阈值不改写控制器 `reach_dist`。Planner 会忽略 `z<-0.1` 的目标，本版提前拒绝并返回 `20`；地形跟随可能改写目标 z，而 SDK 始终按请求坐标监视距离；重复 XY、仅变 z 的目标不保证触发新的控制器到达过程。这些情况可能持续等待，需客户端取消。SDK 不修改 Planner 或控制器，也不能从现有消息识别其他发布者替换了目标。
 
@@ -124,7 +128,7 @@ Goto 要求 MAVROS `IN_AIR`、有效且带时间戳的 xyz，以及控制/目标
 | Goal | `float32 target_altitude`：目标高度，m，相对起飞点地面 | 已完成 | **未完成**：任何值均忽略，不把请求高度换算或传给控制器。实际仍执行 px4ctrl 的 `hover_height`，不保证到达请求高度。 |
 | Goal | `float32 climb_speed`：爬升速度，m/s，`<=0` 使用默认 | 已完成 | **未完成**：正值和 `<=0` 均忽略，没有按请求选速或选择默认速度的分支；仍用后端原比例公式。 |
 | Goal | `float32 timeout`：超时，s | 已完成 | **未完成**：没有任务超时计时、超时终止或 `ERR_TIMEOUT=2` 返回。 |
-| Result | `bool success` | 已完成 | **已完成现有状态映射**：命令之后的 `DroneState.tookoff=true` 返回 true；拒绝、取消返回 false。这里的成功不是到达 Goal.target_altitude 的确认。 |
+| Result | `bool success` | 已完成 | **已完成现有状态映射**：命令之后的 `DroneState.tookoff=true` 且 MAVROS 连接有效时返回 true；拒绝、取消返回 false。这里的成功不是到达 Goal.target_altitude 的确认。 |
 | Result | `uint8 error_code` | 已完成 | **已完成当前分支编码**：Takeoff 实际返回 `0/3/4/7/12/21`；未覆盖的错误见下表。 |
 | Result | `string message` | 已完成 | **已完成**：成功、拒绝、取消均填写原因说明。 |
 | Feedback | `uint8 phase`：1 PRECHECK、2 CLIMBING、3 STABILIZING、4 DONE | 已完成 | **部分完成**：输出 1、2、4；没有输出 3，具体见阶段表。 |
@@ -140,7 +144,7 @@ Goto 要求 MAVROS `IN_AIR`、有效且带时间戳的 xyz，以及控制/目标
 | `1 PRECHECK` | **已完成阶段映射；自检范围有限** | 接受请求后先反馈 1；新状态未体现起飞进展时也映射为 1。请求接受前只检查通信、状态、地面条件和有限里程计 z；不代表已完成电池、定位质量等完整飞行自检。PDF 未列自检清单。 |
 | `2 CLIMBING` | **已完成状态映射** | 新 DroneState 的 `landed=false`，或新 MAVROS 状态为 `TAKEOFF/IN_AIR` 时反馈 2；更新仍要求已有命令之后的 DroneState。不另外用垂直速度判断爬升。 |
 | `3 STABILIZING` | **未完成** | 没有独立稳定信号、稳定检测或阶段 3 输出。PDF 未规定稳定阈值及持续时间，本版不自行增加判据。 |
-| `4 DONE` | **已完成状态映射** | 新 `tookoff=true` 时反馈 4、`progress=1`，再返回成功并释放任务槽。无需先经历阶段 2；不等待阶段 3。 |
+| `4 DONE` | **已完成状态映射** | 新 `tookoff=true` 且 MAVROS 连接有效时反馈 4、`progress=1`，再返回成功并释放任务槽。无需先经历阶段 2；不等待阶段 3。 |
 
 `tookoff` 来自 现有 `Spikive-Planner-SDK/src/planner/drone_control/src/px4ctrl.cpp`，其条件为 `takeoff_triggered && is_in_air && reached_hover_height`，其中 `reached_hover_height` 使用 `abs(hover_height-position_z)<0.1`。这属于现有控制器约定，**PDF 没有指定这个成功判据**。
 
@@ -150,7 +154,7 @@ PDF §1.3 的错误码表注明“仅做参考”，没有要求 Takeoff 必须�
 
 | 错误码 / 场景 | 状态 | 当前处理 |
 | --- | --- | --- |
-| `0 OK` | **已完成** | 新 `tookoff=true` 时返回成功。 |
+| `0 OK` | **已完成** | 新 `tookoff=true` 且 MAVROS 连接有效时返回成功。 |
 | `3 ERR_CANCELLED` | **已完成跟踪取消** | 取消当前 Action，返回 false，释放任务槽；不发送停止、悬停或降落命令。取消对飞机的具体行为是本项目约定，PDF 未细化。 |
 | `4 ERR_POSE_INVALID` | **部分检测** | 请求时未收到有效里程计 z，或 z 非有限值，则拒绝；不检查完整位姿、定位质量或数据年龄。任务中出现无效 z 只反馈 NaN，不自动终止。 |
 | `7 ERR_ALREADY_FLYING` | **已完成** | `tookoff=true`、`landed=false` 或 MAVROS 已知状态不是 ON_GROUND 时拒绝。 |
@@ -180,7 +184,9 @@ PDF §1.3 的错误码表注明“仅做参考”，没有要求 Takeoff 必须�
 | `topics/control` / `topics/drone_state` | `/control` / 空值自动生成 `/drone_{id}_state` |
 | `topics/goal` | `/goal_with_id` |
 | `topics/mavros_state` / `topics/extended_state` | `/mavros/state` / `/mavros/extended_state` |
-| `topics/odometry` / `topics/altitude` | `/mavros/local_position/odom` / `/mavros/altitude` |
+| `topics/odometry` / `topics/altitude` | `/mavros/local_position/odom`（起飞高度、速度）/ `/mavros/altitude` |
+| `topics/navigation_odometry` | 空值自动生成 `/drone_{id}_visual_slam/odom`；Goto 位置和到达计时 |
+| `frames/world` | `world`；地图、初值及导航里程计的原生坐标约定，不执行 TF |
 | `actions/takeoff` / `actions/land` | `/nav/flight/takeoff` / `/nav/flight/land` |
 | `actions/goto` | `/nav/flight/goto` |
 | `actions/return_home` | `/nav/flight/return_home` |
@@ -227,7 +233,7 @@ catkin_make install -j2 -l2 -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
-Docker 中将 `sdk_source` 改为容器内源码路径。验收止于四个飞行 Action 和定位接口生成、C++ 编译链接及安装，不启动飞行节点。开发 Skill：`$spikive-control-sdk`（`~/.codex/skills/spikive-control-sdk/SKILL.md`），Return 的新增约定以本包文档为准。
+Docker 中将 `sdk_source` 改为容器内源码路径。验收止于四个飞行 Action 和定位接口生成、C++ 编译链接及安装，不启动飞行节点。开发 Skill：`$spikive-control-sdk`（`~/.codex/skills/spikive-control-sdk/SKILL.md`），Return 与 0.6.0 坐标适配的新约定以本包文档为准。
 
 2026-10-16 Return 验证：在 Ubuntu 20.04 / ROS Noetic、MAVROS 1.20.1 Docker 环境中，仅构建上述三个包，五个 Action（四个飞行 + Relocalize）、LoadMap 和 LocalizationStatus 生成，SDK 库与节点编译链接、安装通过；启用 `-Wall -Wextra -Wpedantic`，无编译警告。飞行 README 中 8 条 pub 命令和定位 README 中 3 条请求/取消命令均通过离线消息序列化检查；launch 参数展开、安装节点动态库依赖检查通过。Return 字段明确标记为 PDF 缺失部分的 SDK 补充定义，既有三个飞行 Action 字段未改动。未启动飞行节点或运行飞行验证。本机日志：`/tmp/spikive-control-sdk-return-noetic.log`、`/tmp/spikive-control-sdk-return-checks.log`。
 
@@ -235,8 +241,8 @@ Docker 中将 `sdk_source` 改为容器内源码路径。验收止于四个飞�
 定位适配新增的离线测试不连接 ROS master，也不运行 ICP 或飞机节点：
 
 ```bash
-catkin_make run_tests_spikive_control_sdk_gtest_localization_io_test -j2 -l2
+catkin_make run_tests_spikive_control_sdk -j2 -l2
 catkin_test_results build/test_results/spikive_control_sdk
 ```
 
-地图、初值和匹配的接口定义及限制以 [定位说明](docs/README_定位与点云加载.md) 为准；现有起飞、降落、Goto 语义保持不变。独立仓库的初始飞行 SDK 基线为 `0895fc3`。
+地图、初值和匹配的接口定义及限制以 [定位说明](docs/README_定位与点云加载.md) 为准；起降仍使用既有状态；Goto 的位置来源调整见 [坐标对齐说明](docs/README_坐标对齐与验证.md)。独立仓库的初始飞行 SDK 基线为 `0895fc3`。

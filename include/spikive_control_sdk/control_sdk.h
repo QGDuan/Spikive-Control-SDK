@@ -15,6 +15,9 @@
 namespace spikive_control_sdk
 {
 
+// Goto 的位置必须是带时间戳、坐标系匹配且有限的 Planner 同源里程计。
+bool validNavigationOdometry(const nav_msgs::Odometry& odom, const std::string& world_frame);
+
 // 消息转发与状态缓存；使用单线程 ros::spin()。
 // 直接调用 takeoff()/land()/returnHome()/resume()/goTo() 只发消息，Action 准入、互斥、完成判定由节点负责。
 class ControlSdk
@@ -37,6 +40,8 @@ public:
   bool hasOdometry() const { return have_odometry_; }
   bool hasPosition() const { return have_position_; }
   const nav_msgs::Odometry& odometry() const { return odometry_; }
+  bool hasNavigationOdometry() const { return have_navigation_odometry_; }
+  const nav_msgs::Odometry& navigationOdometry() const { return navigation_odometry_; }
   double altitudeZ() const { return altitude_z_; }
   float groundClearance() const { return ground_clearance_; }
   bool hasControlSubscriber() const { return control_pub_.getNumSubscribers() > 0; }
@@ -57,6 +62,7 @@ private:
   void extendedCallback(const mavros_msgs::ExtendedState::ConstPtr& msg);
   void altitudeCallback(const mavros_msgs::Altitude::ConstPtr& msg);
   void odometryCallback(const nav_msgs::Odometry::ConstPtr& msg);
+  void navigationOdometryCallback(const nav_msgs::Odometry::ConstPtr& msg);
 
   ros::Publisher control_pub_;
   ros::Publisher goal_pub_;
@@ -65,19 +71,23 @@ private:
   ros::Subscriber extended_sub_;
   ros::Subscriber altitude_sub_;
   ros::Subscriber odometry_sub_;
+  ros::Subscriber navigation_odometry_sub_;
   controller_msgs::DroneState drone_state_;
   mavros_msgs::State mavros_state_;
   mavros_msgs::ExtendedState extended_state_;
   nav_msgs::Odometry odometry_;
+  nav_msgs::Odometry navigation_odometry_;
   StateCallback state_callback_;
   UpdateCallback update_callback_;
   bool have_drone_state_{false};
   bool have_odometry_{false};
   bool have_position_{false};
+  bool have_navigation_odometry_{false};
   bool have_extended_state_{false};
   double altitude_z_{0.0};
   float ground_clearance_{std::numeric_limits<float>::quiet_NaN()};
   int drone_id_;
+  std::string world_frame_;
 };
 
 }  // namespace spikive_control_sdk

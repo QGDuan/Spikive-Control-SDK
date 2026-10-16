@@ -46,8 +46,10 @@ std::string fileMd5(const std::string& path)
 }
 }  // namespace
 
-LoadedMap readLocalizationMap(const std::string& path, const std::string& expected_md5)
+LoadedMap readLocalizationMap(const std::string& path, const std::string& expected_md5,
+                              const std::string& world_frame)
 {
+  if (world_frame.empty()) throw std::invalid_argument("Native world frame must not be empty");
   struct stat info{};
   if (path.empty() || path.front() != '/' || stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
     throw std::invalid_argument("map_path must name an existing absolute regular PCD file");
@@ -80,8 +82,34 @@ LoadedMap readLocalizationMap(const std::string& path, const std::string& expect
   // 文件读两遍：发送前确认 MD5 对应的文件在解析期间没有改变。
   if (fileMd5(path) != result.md5) throw std::domain_error("Map file changed during loading; retry with a stable file");
   pcl::toROSMsg(finite, result.cloud);
-  result.cloud.header.frame_id = "map";
+  // 与 WayPoint 一致：PCD 数值已在项目原生坐标下；这里只声明 frame，不进行 TF。
+  result.cloud.header.frame_id = world_frame;
   return result;
+}
+
+bool normalizePose(geometry_msgs::Pose& pose)
+{
+  const auto& p = pose.position;
+  auto& q = pose.orientation;
+  for (double value : {p.x, p.y, p.z, q.x, q.y, q.z, q.w}) if (!std::isfinite(value)) return false;
+  const double norm = std::hypot(std::hypot(q.x, q.y), std::hypot(q.z, q.w));
+  if (!std::isfinite(norm) || norm < 1e-12) return false;
+  q.x /= norm; q.y /= norm; q.z /= norm; q.w /= norm;
+  return true;
+}
+
+geometry_msgs::PoseWithCovarianceStamped prepareInitialPose(
+  const geometry_msgs::PoseWithCovarianceStamped& input, const std::string& world_frame)
+{
+  if (world_frame.empty() || (!input.header.frame_id.empty() && input.header.frame_id != world_frame))
+    throw std::invalid_argument("initial_pose must use frame '" + world_frame + "'; no coordinate conversion is performed");
+  auto pose = input;
+  if (!normalizePose(pose.pose.pose))
+    throw std::domain_error("Initial pose must be finite with a nonzero quaternion");
+  for (double value : pose.pose.covariance)
+    if (!std::isfinite(value)) throw std::domain_error("Initial pose covariance must be finite");
+  pose.header.frame_id = world_frame;
+  return pose;
 }
 
 MatchStatus parseMatchStatus(const std::string& json, int drone_id)

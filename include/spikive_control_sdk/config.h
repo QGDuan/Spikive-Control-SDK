@@ -18,6 +18,8 @@ struct Config
   std::string mavros_state_topic{"/mavros/state"};
   std::string extended_state_topic{"/mavros/extended_state"};
   std::string odometry_topic{"/mavros/local_position/odom"};
+  std::string navigation_odometry_topic{"/drone_1_visual_slam/odom"};
+  std::string world_frame{"world"};  // WayPoint 地图、初值和 Planner 目标使用的原生坐标；不做 TF。
   std::string altitude_topic{"/mavros/altitude"};
   std::string takeoff_action{"/nav/flight/takeoff"};
   std::string land_action{"/nav/flight/land"};

@@ -37,14 +37,27 @@ protected:
 TEST_F(MapFixture, ReadsSlamXyzWithoutChangingCoordinates)
 {
   const auto map = readLocalizationMap(path, "");
-  EXPECT_EQ(map.cloud.header.frame_id, "map");
+  EXPECT_EQ(map.cloud.header.frame_id, "world");
   EXPECT_EQ(map.cloud.width * map.cloud.height, 6u);
   EXPECT_EQ(map.md5.size(), 32u);
   // 第 2 个点保持 x=1，不进行 NED 转换或交换轴。
-  float x = 0, y = 0;
+  float x = 0, y = 0, z = 0;
   std::memcpy(&x, map.cloud.data.data() + map.cloud.point_step, sizeof(float));
   std::memcpy(&y, map.cloud.data.data() + map.cloud.point_step + 4, sizeof(float));
   EXPECT_FLOAT_EQ(x, 1); EXPECT_FLOAT_EQ(y, 0);
+  // 第 4 个点保持 z=+1，不反转高度。
+  std::memcpy(&z, map.cloud.data.data() + 3 * map.cloud.point_step + 8, sizeof(float));
+  EXPECT_FLOAT_EQ(z, 1);
+}
+
+TEST_F(MapFixture, ConfiguredFrameOnlyChangesLabel)
+{
+  const auto native = readLocalizationMap(path, "");
+  const auto custom = readLocalizationMap(path, "", "site_world");
+  EXPECT_EQ(custom.cloud.header.frame_id, "site_world");
+  EXPECT_EQ(custom.cloud.data, native.cloud.data);
+  EXPECT_EQ(custom.md5, native.md5);
+  EXPECT_THROW(readLocalizationMap(path, "", ""), std::invalid_argument);
 }
 
 TEST_F(MapFixture, Md5MatchesFileAndAllowsUppercase)

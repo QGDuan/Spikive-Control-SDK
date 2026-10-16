@@ -14,6 +14,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 
 namespace spikive_control_sdk
@@ -39,7 +40,7 @@ public:
     backend_status_sub_ = nh.subscribe(config.match_status_topic, 20, &Impl::onStatus, this);
     map_echo_sub_ = nh.subscribe(config.map_echo_topic, 2, &Impl::onMapEcho, this);
     transform_sub_ = nh.subscribe(config.match_transform_topic, 20, &Impl::onTransform, this);
-    status_.header.frame_id = "map";
+    status_.header.frame_id = config.world_frame;
     status_.state = "idle";
     status_.fitness_score = -1;
     status_.message = "Load a PCD map before relocalization";
@@ -48,8 +49,9 @@ public:
     timer_ = nh.createWallTimer(ros::WallDuration(1.0 / config.localization_status_rate), &Impl::onTimer, this);
     server_.start();
     service_spinner_.start();
-    ROS_INFO("Localization SDK ready: %s, %s; backend drone=%d; native map/world frames",
-             config.load_map_service.c_str(), config.relocalize_action.c_str(), config.drone_id);
+    ROS_INFO("Localization SDK ready: %s, %s; backend drone=%d; input frame=%s; backend echo frame=map",
+             config.load_map_service.c_str(), config.relocalize_action.c_str(), config.drone_id,
+             config.world_frame.c_str());
   }
 
   ~Impl()
@@ -83,12 +85,19 @@ private:
     try
     {
       // 文件 I/O 和 PCL 解码只在独立 Service 队列执行；不占用飞行 Action 回调线程。
-      auto map = readLocalizationMap(request.map_path, request.map_md5);
+      auto map = readLocalizationMap(request.map_path, request.map_md5, config_.world_frame);
       std::unique_lock<std::mutex> lock(mutex_);
       if (!backendConnected() || map_pub_.getNumSubscribers() == 0 || !ros::Time::isValid())
       {
         response.error_code = 12;
-        response.message = "Require localization map subscriber, backend status/map publishers and valid ROS time";
+        std::ostringstream missing;
+        missing << "Localization precheck failed (drone_id=" << config_.drone_id << "):";
+        if (map_pub_.getNumSubscribers() == 0) missing << " no subscriber on " << map_pub_.getTopic() << ";";
+        if (backend_status_sub_.getNumPublishers() == 0)
+          missing << " no publisher on " << backend_status_sub_.getTopic() << ";";
+        if (map_echo_sub_.getNumPublishers() == 0) missing << " no publisher on " << map_echo_sub_.getTopic() << ";";
+        if (!ros::Time::isValid()) missing << " ROS time is not valid; check /use_sim_time and /clock;";
+        response.message = missing.str();
       }
       else
       {
@@ -239,17 +248,6 @@ private:
     maybeComplete();
   }
 
-  static bool normalizePose(geometry_msgs::Pose& pose)
-  {
-    const auto& p = pose.position;
-    auto& q = pose.orientation;
-    for (double value : {p.x, p.y, p.z, q.x, q.y, q.z, q.w}) if (!std::isfinite(value)) return false;
-    const double norm = std::hypot(std::hypot(q.x, q.y), std::hypot(q.z, q.w));
-    if (!std::isfinite(norm) || norm < 1e-12) return false;
-    q.x /= norm; q.y /= norm; q.z /= norm; q.w /= norm;
-    return true;
-  }
-
   void onGoal(Goal goal)
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -263,12 +261,10 @@ private:
     if (!status_.map_loaded) { reject(15, "Load and acknowledge a map through this SDK first"); return; }
     if (!backendConnected() || pose_pub_.getNumSubscribers() == 0 || transform_sub_.getNumPublishers() == 0 ||
         !ros::Time::isValid()) { reject(12, "Localization backend topics or ROS time unavailable"); return; }
-    auto pose = goal.getGoal()->initial_pose;
-    if (!pose.header.frame_id.empty() && pose.header.frame_id != "map")
-    { reject(19, "initial_pose must use the native map frame; no coordinate conversion is performed"); return; }
-    if (!normalizePose(pose.pose.pose)) { reject(4, "Initial pose must be finite with a nonzero quaternion"); return; }
-    for (double value : pose.pose.covariance)
-      if (!std::isfinite(value)) { reject(4, "Initial pose covariance must be finite"); return; }
+    geometry_msgs::PoseWithCovarianceStamped pose;
+    try { pose = prepareInitialPose(goal.getGoal()->initial_pose, config_.world_frame); }
+    catch (const std::invalid_argument& error) { reject(19, error.what()); return; }
+    catch (const std::domain_error& error) { reject(4, error.what()); return; }
     goal_ = goal;
     active_ = true;
     seen_matching_ = false;
@@ -281,7 +277,6 @@ private:
     status_.attempt_count = 0;
     status_.elapsed_time = 0;
     status_.message = "Initial pose forwarded; waiting for backend matching acknowledgement";
-    pose.header.frame_id = "map";
     pose.header.stamp = request_stamp_;
     goal_.setAccepted(status_.message);
     pose_pub_.publish(pose);
@@ -290,9 +285,10 @@ private:
 
   void maybeComplete()
   {
+    // localized 已由后端按原始精度判定；JSON 只保留六位小数，不能再用舍入值拒绝成功。
     status_.match_success = seen_matching_ && backendConnected() && status_.map_loaded &&
       status_.state == "localized" && status_.transform_valid && status_.attempt_count > 0 &&
-      status_.fitness_score >= 0 && status_.fitness_score < status_.threshold;
+      status_.fitness_score >= 0;
     if (active_ && status_.match_success) finishAction(true, 0, status_.message);
   }
 

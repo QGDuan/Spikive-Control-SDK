@@ -10,13 +10,20 @@
 namespace spikive_control_sdk
 {
 
+bool validNavigationOdometry(const nav_msgs::Odometry& odom, const std::string& world_frame)
+{
+  const auto& p = odom.pose.pose.position;
+  return !world_frame.empty() && odom.header.frame_id == world_frame && !odom.header.stamp.isZero() &&
+         std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+}
+
 ControlSdk::ControlSdk(ros::NodeHandle& nh, int drone_id)
   : ControlSdk(nh, Config::forDrone(drone_id))
 {
 }
 
 ControlSdk::ControlSdk(ros::NodeHandle& nh, const Config& config)
-  : drone_id_(config.drone_id)
+  : drone_id_(config.drone_id), world_frame_(config.world_frame)
 {
   config.validate();
   control_pub_ = nh.advertise<controller_msgs::cmd>(config.control_topic, 1, false);
@@ -26,6 +33,8 @@ ControlSdk::ControlSdk(ros::NodeHandle& nh, const Config& config)
   extended_sub_ = nh.subscribe(config.extended_state_topic, 10, &ControlSdk::extendedCallback, this);
   altitude_sub_ = nh.subscribe(config.altitude_topic, 10, &ControlSdk::altitudeCallback, this);
   odometry_sub_ = nh.subscribe(config.odometry_topic, 10, &ControlSdk::odometryCallback, this);
+  navigation_odometry_sub_ = nh.subscribe(config.navigation_odometry_topic, 10,
+                                         &ControlSdk::navigationOdometryCallback, this);
 }
 
 void ControlSdk::setStateCallback(StateCallback callback)
@@ -127,6 +136,13 @@ void ControlSdk::odometryCallback(const nav_msgs::Odometry::ConstPtr& msg)
   {
     altitude_z_ = msg->pose.pose.position.z;
   }
+  notifyUpdate();
+}
+
+void ControlSdk::navigationOdometryCallback(const nav_msgs::Odometry::ConstPtr& msg)
+{
+  navigation_odometry_ = *msg;
+  have_navigation_odometry_ = validNavigationOdometry(*msg, world_frame_);
   notifyUpdate();
 }
 

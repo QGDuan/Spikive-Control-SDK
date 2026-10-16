@@ -8,8 +8,12 @@ topics:
   drone_state: ""  # 留空时使用 /drone_{drone_id}_state
   mavros_state: /mavros/state
   extended_state: /mavros/extended_state
-  odometry: /mavros/local_position/odom
+  odometry: /mavros/local_position/odom  # 起飞相对高度、当前速度模长；不用于 Goto 距离
+  navigation_odometry: ""  # 留空时 /drone_{drone_id}_visual_slam/odom，必须与 Planner 同源
   altitude: /mavros/altitude
+
+frames:
+  world: world  # WayPoint 地图、重定位初值、Goto 目标及定位里程计的原生坐标；只校验，不做 TF
 
 actions:
   takeoff: /nav/flight/takeoff

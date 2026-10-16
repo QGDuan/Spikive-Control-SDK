@@ -12,6 +12,8 @@
 roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=1
 ```
 
+Orin 已有后端编号为 2 时，上面的 launch 改用 `drone_id:=2`，下文所有 `/drone_1_*` 对应改成 `/drone_2_*`；Action 接口名称不变。地图和初值必须在起飞前完成一次匹配，成功后后端关闭地图 ICP（`continuous_match=false`），飞行期间继续使用 LIO 位姿及固定修正变换。
+
 可先查看后端状态，每条 echo 单独运行，按 Ctrl+C 退出该监视窗口：
 
 ```bash
@@ -65,10 +67,10 @@ rostopic pub -1 /nav/flight/takeoff/goal spikive_control_sdk/takeoffActionGoal '
 
 ## 3. Goto 测试
 
-等起飞 Action 成功、MAVROS 为 `IN_AIR` 后执行。Planner 需订阅 `/goal_with_id`，MAVROS 里程计 xyz 有效并与目标使用同一原生局部坐标系。先看一次当前位置：
+等起飞 Action 成功、MAVROS 为 `IN_AIR` 后执行。Planner 需订阅 `/goal_with_id`，`/drone_1_visual_slam/odom` 有有效 xyz、非零时间戳，frame 为 world，并与目标使用同一原生地图坐标。先看当前位置和 header：
 
 ```bash
-rostopic echo -n 1 /mavros/local_position/odom/pose/pose/position
+rostopic echo -n 1 /drone_1_visual_slam/odom
 ```
 
 终端 A、B 分别监控反馈和结果：
@@ -89,7 +91,7 @@ rostopic pub -1 /nav/flight/goto/goal spikive_control_sdk/gotoActionGoal '{goal:
 | 检查步骤 | 预期 |
 | --- | --- |
 | 请求接受 | `status.status=1`；转发 `cmd=4`，约 0.2 s 后向 `/goal_with_id` 发布 `{drone_id: 1, goal: [1, 0, 1.5]}` |
-| 飞向目标 | `feedback.state=1`；`distance_total`、`distance_horizontal` 为到请求目标的距离；`current_speed` 为当前速度模长 |
+| 飞向目标 | `feedback.state=1`；`distance_total`、`distance_horizontal` 为到请求目标的距离；`current_speed` 为 MAVROS 当前速度模长 |
 | 满足到达条件 | 新 `reached=true`、两个距离满足阈值，反馈 `state=3`；继续观测稳定时长 |
 | 持续满足 | 最终 `state=4`；结果 `status.status=3, success=true, error_code=0`，`final_distance` 为结束时距离 |
 | 目标尚未发出时条件变化 | `status.status=4`（ABORTED）、`error_code=12`；Continue 可能已经发出 |
@@ -173,7 +175,7 @@ rostopic pub -1 /nav/flight/return_home/cancel actionlib_msgs/GoalID '{}'
 | --- | --- |
 | 0 | 已观察到完成状态 |
 | 3 | 已取消跟踪 |
-| 4 | 起飞缺少有限 z，或 Goto 缺少有限 xyz / 非零里程计时间戳 |
+| 4 | 起飞缺少有限 z，或 Goto 导航里程计缺失、frame 不符、xyz 非有限或时间戳为零 |
 | 6 | 降落时已在地面，或 Goto / Return 时不是 IN_AIR |
 | 7 | 起飞请求时已有空中或起降过渡状态 |
 | 12 | 状态、连接、订阅者或 ROS 时间条件不满足；Return 请求时已有 returned=true |
