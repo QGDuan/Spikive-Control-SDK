@@ -21,3 +21,16 @@ goto:
   arrival_total_dist: 0.30
   arrival_horiz_dist: 0.25
   stable_time: 1.0
+
+# Spikive-SLAM main 的现有话题；空值按 drone_id 自动生成。
+localization:
+  map_topic: ""
+  initial_pose_topic: ""
+  match_status_topic: ""
+  match_transform_topic: ""
+  map_echo_topic: /map
+  load_map_service: /nav/localization/load_map
+  relocalize_action: /nav/localization/relocalize
+  status_topic: /nav/status/localization
+  status_rate: 10.0
+  map_ack_timeout: 5.0  # 仅服务确认等待；重定位算法超时沿用 SLAM 后端。

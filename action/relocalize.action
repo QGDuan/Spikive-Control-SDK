@@ -1,0 +1,18 @@
+# SDK 补充定义：PDF 仅规定 /nav/localization/relocalize 为 Action，未给出字段。
+# 初始机体位姿位于已加载地图的原生 map 坐标系；不做 NED 转换。
+geometry_msgs/PoseWithCovarianceStamped initial_pose
+---
+bool success
+uint8 error_code
+string message
+float64 fitness_score       # 后端 ICP fitness，越小越好；-1 表示未获得
+float64 threshold           # 后端成功阈值，不由 SDK 决定
+uint32 attempt_count
+bool transform_valid
+geometry_msgs/TransformStamped match_transform  # T_map_world，不是机体在地图中的位姿
+---
+string state                # matching / localized / failed，沿用后端状态
+float64 fitness_score
+float64 threshold
+uint32 attempt_count
+float64 elapsed_time        # 后端 elapsed_ms / 1000

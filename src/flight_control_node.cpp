@@ -1,5 +1,6 @@
 #include <spikive_control_sdk/config.h>
 #include <spikive_control_sdk/control_sdk.h>
+#include <spikive_control_sdk/localization_sdk.h>
 #include <spikive_control_sdk/gotoAction.h>
 #include <spikive_control_sdk/landAction.h>
 #include <spikive_control_sdk/takeoffAction.h>
@@ -13,6 +14,7 @@
 #include <exception>
 #include <limits>
 #include <stdexcept>
+#include <set>
 #include <string>
 
 namespace spikive_control_sdk
@@ -77,7 +79,7 @@ public:
     const auto takeoff_name = nh.resolveName(config.takeoff_action);
     const auto land_name = nh.resolveName(config.land_action);
     const auto goto_name = nh.resolveName(config.goto_action);
-    if (takeoff_name == land_name || takeoff_name == goto_name || land_name == goto_name)
+    if (std::set<std::string>{takeoff_name, land_name, goto_name, nh.resolveName(config.relocalize_action)}.size() != 4)
     {
       throw std::invalid_argument("Flight actions resolve to the same ROS name");
     }
@@ -527,6 +529,7 @@ int main(int argc, char** argv)
   {
     const auto config = spikive_control_sdk::Config::load(private_nh);
     spikive_control_sdk::FlightControlNode node(nh, config);
+    spikive_control_sdk::LocalizationSdk localization(nh, config);
     ros::spin();
   }
   catch (const std::exception& error)

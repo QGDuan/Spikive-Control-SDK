@@ -2,6 +2,8 @@
 
 **一个转发命令、监视状态、整理接口的 ROS1 Noetic C++ SDK。** 用户提交 Action，SDK 转发一次已有命令，再把控制器和 MAVROS 状态转成反馈与结果。实际飞行仍由现有 Planner、px4ctrl 和飞控执行。
 
+现已增加 PCD 地图加载、初始位姿重定位和匹配结果适配，详见 [定位与点云加载 README](docs/README_定位与点云加载.md)（含最简命令、PDF 对照和流程图）。
+
 包名 `spikive_control_sdk`，节点名 `spikive_control_sdk_node`。程序逻辑、字段对照和检查结论见 [开发逻辑](docs/开发逻辑.md)。
 
 最简命令行调用和 `rostopic echo` 监控见 [命令行测试 README](docs/README_命令行测试.md)。
@@ -20,7 +22,9 @@ flowchart LR
   P -->|飞行设定值| M[MAVROS / 飞控]
   P -->|DroneState| S
   M -->|连接、起降、上锁、里程计与净空| S
-  S -->|feedback / result| U
+  S -->|PCD / 初始位姿| L[Spikive-SLAM global_match]
+  L -->|地图回显 / 匹配状态 / 变换| S
+  S -->|feedback / result / localization 状态| U
 ```
 
 | 模块 | 职责 |
@@ -43,7 +47,7 @@ flowchart LR
 
 这里的“新”指消息 `header.stamp` 严格晚于本次命令。成功返回 `error_code=0`。**降落在确认着地后成功，是否上锁单独报告，不等待或执行上锁。** `disarmed=false` 表示尚未确认上锁；结果返回后不再更新。
 
-三个 Action 共用一个任务槽，忙时拒绝新请求（`21`）。此互斥只覆盖本节点；前端、WayPoint 等其他 `/control` 或 `/goal_with_id` 发布者仍按原链路工作。发布命令不等于后端已接受，完成依据始终来自状态。
+三个飞行 Action 共用一个任务槽，忙时拒绝新请求（`21`）。此互斥只覆盖本节点；前端、WayPoint 等其他 `/control` 或 `/goal_with_id` 发布者仍按原链路工作。发布命令不等于后端已接受，完成依据始终来自状态。
 
 | Action 参数 | 本版处理 | 实际执行来源 |
 | --- | --- | --- |
@@ -53,7 +57,7 @@ flowchart LR
 | Goto `speed` | 预留，有限值均忽略 | Planner 原有速度配置；GoalSet 无速度字段 |
 | 三个 `timeout` | 预留，不执行；Goto 仍检查有限值 | 没有任务超时或状态超时策略；无完成证据时等待或由客户端取消 |
 
-Action 的字段、类型、顺序保留 [V1.1 PDF](../20260915-用户程序与导航程序ROS接口规范V1.1.pdf) 定义（Goto 坐标语义按项目约定调整，见下表）。SDK 不生成 setpoint、不调用解锁/上锁/模式服务、不修改飞控参数。状态监视输出为现有 Action 的 feedback/result 和 C++ 状态访问接口，本版未增加 `/nav/status/*` 话题。
+Action 的字段、类型、顺序保留 [V1.1 PDF](docs/specs/ROS接口规范V1.1.pdf) 定义（Goto 坐标语义按项目约定调整，见下表）。SDK 不生成 setpoint、不调用解锁/上锁/模式服务、不修改飞控参数。状态监视输出为现有 Action 的 feedback/result 和 C++ 状态访问接口，新增的 `/nav/status/localization` 见定位说明；其余 `/nav/status/*` 话题未扩展。
 
 ## Goto：V1.1 对应关系
 
@@ -114,7 +118,7 @@ Goto 要求 MAVROS `IN_AIR`、有效且带时间戳的 xyz，以及控制/目标
 | `3 STABILIZING` | **未完成** | 没有独立稳定信号、稳定检测或阶段 3 输出。PDF 未规定稳定阈值及持续时间，本版不自行增加判据。 |
 | `4 DONE` | **已完成状态映射** | 新 `tookoff=true` 时反馈 4、`progress=1`，再返回成功并释放任务槽。无需先经历阶段 2；不等待阶段 3。 |
 
-`tookoff` 来自 [px4ctrl](../planner/drone_control/src/px4ctrl.cpp)，其条件为 `takeoff_triggered && is_in_air && reached_hover_height`，其中 `reached_hover_height` 使用 `abs(hover_height-position_z)<0.1`。这属于现有控制器约定，**PDF 没有指定这个成功判据**。
+`tookoff` 来自 现有 `Spikive-Planner-SDK/src/planner/drone_control/src/px4ctrl.cpp`，其条件为 `takeoff_triggered && is_in_air && reached_hover_height`，其中 `reached_hover_height` 使用 `abs(hover_height-position_z)<0.1`。这属于现有控制器约定，**PDF 没有指定这个成功判据**。
 
 ### Takeoff 错误与结束方式
 
@@ -159,6 +163,8 @@ PDF §1.3 的错误码表注明“仅做参考”，没有要求 Takeoff 必须�
 | `goto/stable_time` | `1.0` s |
 | `feedback_rate` | `10.0` Hz；只控制反馈频率 |
 
+定位配置位于同一 YAML 的 `localization/*`，按 id 生成后端话题，地图确认等待默认 5 s、状态发布默认 10 Hz。定位任务槽独立于现有飞行任务槽；初始位姿匹配应在起飞前完成。
+
 先按原流程启动 MAVROS、Planner、px4ctrl 及状态转发节点。SDK launch 只启动本节点：
 
 ```bash
@@ -181,7 +187,7 @@ print(client.get_result())
 
 ## 编译
 
-在已安装 MAVROS 的 Noetic 环境中，仅加入消息依赖和本包：
+在已安装 MAVROS、PCL/pcl_conversions、OpenSSL 开发库的 Noetic 环境中，仅加入消息依赖和本包。独立克隆本仓库时，仍需要已有 `controller_msgs`、`quadrotor_msgs` 包；不需要编译 SLAM 或 Planner 实现。下面以原工作区为源码位置：
 
 ```bash
 source /opt/ros/noetic/setup.bash
@@ -196,6 +202,16 @@ catkin_make install -j2 -l2 -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
-Docker 中将 `sdk_source` 改为容器内源码路径。验收止于三个 Action 生成、C++ 编译链接及安装，不启动飞行节点。开发 Skill：`$spikive-control-sdk`（`~/.codex/skills/spikive-control-sdk/SKILL.md`）。
+Docker 中将 `sdk_source` 改为容器内源码路径。验收止于三个飞行 Action 生成、C++ 编译链接及安装，不启动飞行节点。开发 Skill：`$spikive-control-sdk`（`~/.codex/skills/spikive-control-sdk/SKILL.md`）。
 
-2026-10-16 验证：在 Ubuntu 20.04 / ROS Noetic、MAVROS 1.20.1 Docker 环境中，仅构建上述三个包，Action 生成、SDK 库、节点编译链接和安装通过（启用 `-Wall -Wextra -Wpedantic`）。三个 Action 字段已逐项核对 V1.1；命令行 README 中 6 条 pub 命令通过离线消息序列化检查，launch 参数展开及 Skill 格式检查通过。未运行飞行验证。此次本机编译日志：`/tmp/spikive-control-sdk-goto-noetic-IG6YNn.log`。
+2026-10-16 验证：在 Ubuntu 20.04 / ROS Noetic、MAVROS 1.20.1 Docker 环境中，仅构建上述三个包，Action 生成、SDK 库、节点编译链接和安装通过（启用 `-Wall -Wextra -Wpedantic`）。三个飞行 Action 字段已逐项核对 V1.1；命令行 README 中 6 条 pub 命令通过离线消息序列化检查，launch 参数展开及 Skill 格式检查通过。未运行飞行验证。此次本机编译日志：`/tmp/spikive-control-sdk-goto-noetic-IG6YNn.log`。
+
+
+定位适配新增的离线测试不连接 ROS master，也不运行 ICP 或飞机节点：
+
+```bash
+catkin_make run_tests_spikive_control_sdk_gtest_localization_io_test -j2 -l2
+catkin_test_results build/test_results/spikive_control_sdk
+```
+
+地图、初值和匹配的接口定义及限制以 [定位说明](docs/README_定位与点云加载.md) 为准；现有起飞、降落、Goto 语义保持不变。独立仓库的初始飞行 SDK 基线为 `0895fc3`。

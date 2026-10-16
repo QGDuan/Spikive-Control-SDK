@@ -26,6 +26,17 @@ struct Config
   double arrival_horiz_dist{0.25};
   double stable_time{1.0};
 
+  std::string load_map_service{"/nav/localization/load_map"};
+  std::string relocalize_action{"/nav/localization/relocalize"};
+  std::string localization_status_topic{"/nav/status/localization"};
+  std::string localization_map_topic{"/drone_1_localization_pcl"};
+  std::string initial_pose_topic{"/drone_1_initialpose"};
+  std::string match_status_topic{"/drone_1_localization_match_status"};
+  std::string match_transform_topic{"/drone_1_diff_odom"};
+  std::string map_echo_topic{"/map"};
+  double map_ack_timeout{5.0};  // 仅 LoadMap Service 的确认等待，不是飞行任务超时。
+  double localization_status_rate{10.0};
+
   static Config forDrone(int drone_id);
   static Config load(const ros::NodeHandle& private_nh);
   void validate() const;

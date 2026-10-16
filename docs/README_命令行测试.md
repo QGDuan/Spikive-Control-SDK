@@ -1,6 +1,6 @@
 # SDK 命令行测试
 
-直接使用 `roslaunch`、`rostopic pub` 和 `rostopic echo`，无需编写客户端。
+直接使用 `roslaunch`、`rostopic pub` 和 `rostopic echo`，无需编写客户端。地图加载与重定位命令另见 [定位测试 README](README_定位与点云加载.md)，可在飞行测试前完成。
 
 支持 Takeoff → Goto → Land。每一步等待结果成功后再执行下一步；三个 Action 共用一个任务槽。Goto 使用项目原生局部 `[x,y,z]`，不是 NED，也不是相对位移。
 
