@@ -19,7 +19,7 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(PCL REQUIRED COMPONENTS io)
 find_package(OpenSSL REQUIRED)
 
-add_action_files(FILES takeoff.action land.action goto.action relocalize.action)
+add_action_files(FILES takeoff.action land.action goto.action return_home.action relocalize.action)
 add_service_files(FILES LoadMap.srv)
 add_message_files(FILES LocalizationStatus.msg)
 generate_messages(DEPENDENCIES actionlib_msgs std_msgs geometry_msgs)

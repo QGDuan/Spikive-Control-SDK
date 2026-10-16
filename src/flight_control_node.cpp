@@ -3,6 +3,7 @@
 #include <spikive_control_sdk/localization_sdk.h>
 #include <spikive_control_sdk/gotoAction.h>
 #include <spikive_control_sdk/landAction.h>
+#include <spikive_control_sdk/return_homeAction.h>
 #include <spikive_control_sdk/takeoffAction.h>
 
 #include <actionlib/server/action_server.h>
@@ -34,12 +35,14 @@ enum ErrorCode : std::uint8_t
   ERR_BUSY = 21
 };
 
-enum class Task { NONE, TAKEOFF, LAND, GOTO };
+enum class Task { NONE, TAKEOFF, LAND, GOTO, RETURN_HOME };
 enum TakeoffPhase : std::uint8_t { PRECHECK = 1, CLIMBING = 2, DONE = 4 };
 // 现有状态没有独立的触地检测阶段，保留 Action 定义但不生成 phase=2。
 enum LandPhase : std::uint8_t { DESCENDING = 1, TOUCHDOWN = 3, DISARMED = 4 };
 // 后端没有独立避障状态，不生成 AVOIDING=2。
 enum GotoState : std::uint8_t { NAVIGATING = 1, HOLDING = 3, GOTO_DONE = 4 };
+// SDK 补充阶段；没有独立稳定信号，不增加阶段 3。
+enum ReturnPhase : std::uint8_t { RETURN_PRECHECK = 1, RETURNING = 2, RETURN_DONE = 4 };
 
 template<class Result>
 Result makeResult(bool success, ErrorCode code, const std::string& message)
@@ -53,15 +56,17 @@ Result makeResult(bool success, ErrorCode code, const std::string& message)
 }  // namespace
 
 // Action 适配器：检查请求 → 转发一次命令 → 监视状态并回传结果。
-// 互斥覆盖本节点三个 Action，不接管外部控制或目标点发布者。
+// 互斥覆盖本节点四个飞行 Action，不接管外部控制或目标点发布者。
 class FlightControlNode
 {
   using TakeoffServer = actionlib::ActionServer<takeoffAction>;
   using LandServer = actionlib::ActionServer<landAction>;
   using GotoServer = actionlib::ActionServer<gotoAction>;
+  using ReturnServer = actionlib::ActionServer<return_homeAction>;
   using TakeoffGoal = TakeoffServer::GoalHandle;
   using LandGoal = LandServer::GoalHandle;
   using GotoGoal = GotoServer::GoalHandle;
+  using ReturnGoal = ReturnServer::GoalHandle;
 
 public:
   FlightControlNode(ros::NodeHandle& nh, const Config& config)
@@ -74,12 +79,17 @@ public:
                    [this](LandGoal goal) { cancelLand(goal); }, false),
       goto_server_(nh, config.goto_action,
                    [this](GotoGoal goal) { onGoto(goal); },
-                   [this](GotoGoal goal) { cancelGoto(goal); }, false)
+                   [this](GotoGoal goal) { cancelGoto(goal); }, false),
+      return_server_(nh, config.return_home_action,
+                     [this](ReturnGoal goal) { onReturn(goal); },
+                     [this](ReturnGoal goal) { cancelReturn(goal); }, false)
   {
     const auto takeoff_name = nh.resolveName(config.takeoff_action);
     const auto land_name = nh.resolveName(config.land_action);
     const auto goto_name = nh.resolveName(config.goto_action);
-    if (std::set<std::string>{takeoff_name, land_name, goto_name, nh.resolveName(config.relocalize_action)}.size() != 4)
+    const auto return_name = nh.resolveName(config.return_home_action);
+    if (std::set<std::string>{takeoff_name, land_name, goto_name, return_name,
+                              nh.resolveName(config.relocalize_action)}.size() != 5)
     {
       throw std::invalid_argument("Flight actions resolve to the same ROS name");
     }
@@ -93,9 +103,10 @@ public:
     takeoff_server_.start();
     land_server_.start();
     goto_server_.start();
-    ROS_INFO("Flight actions ready for drone %d: %s, %s, %s; speed and timeout remain reserved",
+    return_server_.start();
+    ROS_INFO("Flight actions ready for drone %d: %s, %s, %s, %s; speed and timeout remain reserved",
              config.drone_id, config.takeoff_action.c_str(), config.land_action.c_str(),
-             config.goto_action.c_str());
+             config.goto_action.c_str(), config.return_home_action.c_str());
   }
 
 private:
@@ -142,6 +153,12 @@ private:
     result.final_distance = std::numeric_limits<float>::quiet_NaN();
     goal.setRejected(result, message);
     ROS_WARN_STREAM("Goto rejected: " << message);
+  }
+
+  void rejectReturn(ReturnGoal goal, ErrorCode code, const std::string& message)
+  {
+    goal.setRejected(makeResult<return_homeResult>(false, code, message), message);
+    ROS_WARN_STREAM("Return rejected: " << message);
   }
 
   void onTakeoff(TakeoffGoal goal)
@@ -215,6 +232,44 @@ private:
     active_task_ = Task::LAND;
     publishFeedback();
     ROS_INFO("Published cmd=2; waiting for newer DroneState.landed and MAVROS ON_GROUND");
+  }
+
+  void onReturn(ReturnGoal goal)
+  {
+    ROS_INFO("Return request: timeout=%g is reserved and ignored; FlightManager retains its home position, "
+             "planner retains its speed; no automatic landing", goal.getGoal()->timeout);
+    if (active_task_ != Task::NONE)
+    {
+      rejectReturn(goal, ERR_BUSY, "A flight action is already active");
+      return;
+    }
+    if (!ready() || !sdk_.hasGoalSubscriber())
+    {
+      rejectReturn(goal, ERR_PRECHECK_FAILED,
+                   "Require controller state, connected MAVROS, known extended state, control and goal subscribers, valid ROS time");
+      return;
+    }
+    if (sdk_.extendedState().landed_state != mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR)
+    {
+      rejectReturn(goal, ERR_NOT_TAKEOFF, "Return requires MAVROS IN_AIR; takeoff/landing transitions are not ready");
+      return;
+    }
+    if (sdk_.droneState().returned)
+    {
+      rejectReturn(goal, ERR_PRECHECK_FAILED,
+                   "Controller already reports returned; cannot confirm a new return from the existing completion flag");
+      return;
+    }
+
+    return_goal_ = goal;
+    return_pending_stamp_ = ros::Time();
+    return_feedback_ = return_homeFeedback();
+    return_feedback_.phase = RETURN_PRECHECK;
+    return_goal_.setAccepted("Tracking existing return; home and speed remain backend-defined, timeout is reserved");
+    command_stamp_ = sdk_.returnHome();
+    active_task_ = Task::RETURN_HOME;
+    publishFeedback();
+    ROS_INFO("Published cmd=3; waiting for post-command returned=false then a newer returned=true; no automatic landing");
   }
 
   void onGoto(GotoGoal goal)
@@ -314,6 +369,10 @@ private:
     {
       updateGoto();
     }
+    else if (active_task_ == Task::RETURN_HOME)
+    {
+      updateReturn();
+    }
   }
 
   void updateTakeoff()
@@ -367,6 +426,37 @@ private:
       // LANDING 只说明正在降落，不能据此生成触地检测或着地完成状态。
       land_feedback_.phase = DESCENDING;
     }
+  }
+
+  void updateReturn()
+  {
+    const auto& state = sdk_.droneState();
+    if (state.header.stamp <= command_stamp_)
+    {
+      return;
+    }
+    // px4ctrl 可能保留 is_returned；新时间戳的 true 也可能沿用旧完成状态。
+    // 先观察命令之后的 false，再接受时间更晚的 true；这仍不是命令 ACK。
+    if (!state.returned)
+    {
+      return_pending_stamp_ = std::max(return_pending_stamp_, state.header.stamp);
+      return_feedback_.phase = RETURNING;
+      return;
+    }
+    const auto& extended = sdk_.extendedState();
+    if (return_pending_stamp_.isZero() || state.header.stamp <= return_pending_stamp_ ||
+        !sdk_.connected() || state.landed || extended.header.stamp <= command_stamp_ ||
+        extended.landed_state != mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR)
+    {
+      return;
+    }
+    return_feedback_.phase = RETURN_DONE;
+    return_feedback_.progress = 1.0f;
+    publishFeedback();
+    return_goal_.setSucceeded(makeResult<return_homeResult>(true, OK,
+      "Controller reports return complete; no landing command was sent"));
+    active_task_ = Task::NONE;
+    ROS_INFO("Return succeeded from DroneState.returned; landing remains a separate action");
   }
 
   void refreshGotoFeedback()
@@ -470,6 +560,17 @@ private:
     }
   }
 
+  void cancelReturn(ReturnGoal goal)
+  {
+    if (active_task_ == Task::RETURN_HOME && goal == return_goal_)
+    {
+      const std::string message = "Return tracking cancelled; aircraft control is unchanged";
+      return_goal_.setCanceled(makeResult<return_homeResult>(false, ERR_CANCELLED, message), message);
+      active_task_ = Task::NONE;
+      ROS_INFO_STREAM(message);
+    }
+  }
+
   void publishFeedback()
   {
     if (active_task_ == Task::TAKEOFF)
@@ -490,6 +591,10 @@ private:
       refreshGotoFeedback();
       goto_goal_.publishFeedback(goto_feedback_);
     }
+    else if (active_task_ == Task::RETURN_HOME)
+    {
+      return_goal_.publishFeedback(return_feedback_);
+    }
   }
 
   void onTimer(const ros::WallTimerEvent&) { publishFeedback(); }
@@ -499,14 +604,18 @@ private:
   TakeoffServer takeoff_server_;
   LandServer land_server_;
   GotoServer goto_server_;
+  ReturnServer return_server_;
   ros::WallTimer feedback_timer_;
   ros::WallTimer goto_dispatch_timer_;
   TakeoffGoal takeoff_goal_;
   LandGoal land_goal_;
   GotoGoal goto_goal_;
+  ReturnGoal return_goal_;
   takeoffFeedback takeoff_feedback_;
   landFeedback land_feedback_;
   gotoFeedback goto_feedback_;
+  return_homeFeedback return_feedback_;
+  ros::Time return_pending_stamp_;
   std::array<float, 3> goto_target_{};
   double arrival_total_dist_{0.0};
   double arrival_horiz_dist_{0.0};

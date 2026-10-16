@@ -22,6 +22,7 @@ struct Config
   std::string takeoff_action{"/nav/flight/takeoff"};
   std::string land_action{"/nav/flight/land"};
   std::string goto_action{"/nav/flight/goto"};
+  std::string return_home_action{"/nav/flight/return_home"};
   double arrival_total_dist{0.30};
   double arrival_horiz_dist{0.25};
   double stable_time{1.0};

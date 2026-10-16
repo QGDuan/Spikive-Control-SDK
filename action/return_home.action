@@ -1,0 +1,12 @@
+# SDK 补充定义：V1.1 PDF 仅列出 /nav/flight/return_home，未定义字段。
+# goal
+float32 timeout         # 预留，不执行任务超时；返航点和速度沿用现有后端
+---
+# result
+bool success
+uint8 error_code
+string message
+---
+# feedback
+uint8 phase             # 1 PRECHECK 2 RETURNING 4 DONE；阶段 2 仅表示跟踪中，不是命令 ACK
+float32 progress        # 未完成 0，完成 1；不计算距离百分比

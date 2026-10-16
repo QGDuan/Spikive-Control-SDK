@@ -2,11 +2,11 @@
 
 直接使用 `roslaunch`、`rostopic pub` 和 `rostopic echo`，无需编写客户端。地图加载与重定位命令另见 [定位测试 README](README_定位与点云加载.md)，可在飞行测试前完成。
 
-支持 Takeoff → Goto → Land。每一步等待结果成功后再执行下一步；三个 Action 共用一个任务槽。Goto 使用项目原生局部 `[x,y,z]`，不是 NED，也不是相对位移。
+支持 Takeoff → Goto → Return → Land。每一步等待结果成功后再执行下一步；四个飞行 Action 共用一个任务槽。Goto 使用项目原生局部 `[x,y,z]`，不是 NED，也不是相对位移；Return 使用 FlightManager 已配置的返航点。
 
 ## 1. 启动
 
-以下命令使用默认配置、`drone_id=1`。每个终端先 source 同一个 catkin 工作区的 `devel/setup.bash` 或 `install/setup.bash`。MAVROS、Planner、px4ctrl 和 `/drone_1_state` 转发节点按原流程启动；这些命令会转发真实飞行指令。
+以下命令使用默认配置、`drone_id=1`。每个终端先 source 同一个 catkin 工作区的 `devel/setup.bash` 或 `install/setup.bash`。MAVROS、Planner、FlightManager、px4ctrl 和 `/drone_1_state` 转发节点按原流程启动；这些命令会转发真实飞行指令。
 
 ```bash
 roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=1
@@ -27,6 +27,7 @@ rostopic echo /drone_1_state
 | `ExtendedState.landed_state` | 0 未知、1 在地面、2 在空中、3 起飞中、4 降落中 |
 | `DroneState.tookoff` | 现有控制器报告起飞完成 |
 | `DroneState.reached` | 控制器现有 XY 到达标志；Goto 还会检查目标距离和稳定时长 |
+| `DroneState.returned` | 控制器返航完成标志；Return 需观察命令后的 false→true，并结合新 MAVROS IN_AIR |
 | `DroneState.landed` | 控制器地面标志；需要结合 MAVROS ON_GROUND 判断真实着地 |
 
 ## 2. 起飞测试
@@ -95,9 +96,37 @@ rostopic pub -1 /nav/flight/goto/goal spikive_control_sdk/gotoActionGoal '{goal:
 
 本版不输出 `state=2 AVOIDING`。`state=3` 是到达稳定检查，不是另发悬停命令。没有超时；地形跟随改写目标 z、仅变 z 的目标或没有持续更新的状态，可能导致一直等待，详见 [Goto 对应表](../README.md#goto-v11-对应关系)。
 
-## 4. 降落测试
+## 4. Return 返航测试
 
-等 Goto（或起飞）Action 完成，或取消其跟踪后，再发降落请求。先分别打开下面两个监视窗口：
+等 Goto 完成、MAVROS 为 `IN_AIR` 且 `DroneState.returned=false` 后执行。FlightManager 需已启动，Planner 需订阅 `/goal_with_id`。返航点使用后端 `init_x/init_y/init_z`（已有 autoloc 可更新 XY），不是 SDK 自动记录的起飞点，也不会随 Relocalize 初值自动改变；先确认其与当前原生坐标一致。
+
+终端 A、B 分别看反馈和结果：
+
+```bash
+rostopic echo /nav/flight/return_home/feedback
+rostopic echo /nav/flight/return_home/result
+```
+
+终端 C 发送一次返航请求：
+
+```bash
+rostopic pub -1 /nav/flight/return_home/goal spikive_control_sdk/return_homeActionGoal '{goal: {timeout: 0}}'
+```
+
+`timeout` 预留，不设置超时。该 Action 名称来自 PDF，字段为 SDK 补充定义。
+
+| 检查步骤 | 预期 |
+| --- | --- |
+| 请求接受 | `status.status=1`；SDK 只向 `/control` 发布一次 `cmd=3`；FlightManager 在命令切换到 3 时发布返航点 |
+| 跟踪返航 | 初始 `feedback.phase=1`；收到命令后 `returned=false` 转为 `phase=2, progress=0`，此阶段不是后端命令 ACK |
+| 控制器报告完成 | 之后收到时间更晚的 `returned=true && !landed`，连接有效且新 MAVROS 为 IN_AIR；最终 `phase=4, progress=1`，结果 `status.status=3, success=true, error_code=0` |
+| 当前已报告返航完成 | `status.status=5, success=false, error_code=12`；不发送命令，不复用已有 true |
+
+`returned` 沿用控制器 XY 到达和已有约 3 s 的状态持续判断，不表示三维距离和航向均完成。若一直没有命令后的 false→true，Action 持续等待，可取消跟踪。连续 `cmd=3` 不会让 FlightManager 重新发布返航点，因此取消后再次请求不保证重新派发。**成功后不会自动降落或上锁，下一步需单独调用 Land。**
+
+## 5. 降落测试
+
+等 Return、Goto 或起飞 Action 完成，或取消其跟踪后，再发降落请求。先分别打开下面两个监视窗口：
 
 ```bash
 rostopic echo /nav/flight/land/feedback
@@ -112,7 +141,7 @@ rostopic pub -1 /nav/flight/land/goal spikive_control_sdk/landActionGoal '{goal:
 
 `descend_speed` 和 `timeout` 均预留。反馈的 `height` 是下方净空，无有效测量时为 NaN；不是本地坐标 z。新的控制器 `landed=true` 与 MAVROS ON_GROUND 共同确认后返回 `success=true, error_code=0`。`disarmed` 单独报告是否确认已上锁，成功不要求 `disarmed=true`。
 
-## 5. 取消与监控
+## 6. 取消与监控
 
 取消对应接口的当前任务：
 
@@ -120,6 +149,7 @@ rostopic pub -1 /nav/flight/land/goal spikive_control_sdk/landActionGoal '{goal:
 rostopic pub -1 /nav/flight/takeoff/cancel actionlib_msgs/GoalID '{}'
 rostopic pub -1 /nav/flight/land/cancel actionlib_msgs/GoalID '{}'
 rostopic pub -1 /nav/flight/goto/cancel actionlib_msgs/GoalID '{}'
+rostopic pub -1 /nav/flight/return_home/cancel actionlib_msgs/GoalID '{}'
 ```
 
 按需要只运行其中一条。空 GoalID 表示取消该 Action 接口的所有活动目标；本节点最多跟踪一个任务。返回 `result.success=false, result.error_code=3`，已接受任务通常为 `status.status=2`。**取消和退出 echo 都不会停止飞机；取消只结束 SDK 跟踪。** Goto 在 0.2 s 等待期被取消时不再发送目标，已发出的 Continue 或目标不撤回。
@@ -128,6 +158,7 @@ rostopic pub -1 /nav/flight/goto/cancel actionlib_msgs/GoalID '{}'
 | --- | --- |
 | 起飞 Action 生命周期 | `rostopic echo /nav/flight/takeoff/status` |
 | Goto Action 生命周期 | `rostopic echo /nav/flight/goto/status` |
+| Return Action 生命周期 | `rostopic echo /nav/flight/return_home/status` |
 | 目标坐标原样转发 | `rostopic echo /goal_with_id` |
 | 降落 Action 生命周期 | `rostopic echo /nav/flight/land/status` |
 | 实际转发的控制消息 | `rostopic echo /control` |
@@ -136,18 +167,18 @@ rostopic pub -1 /nav/flight/goto/cancel actionlib_msgs/GoalID '{}'
 
 `status` 中可能同时保留多个近期任务，按 `goal_id.id` 区分。不要混淆 Action 的 `status.status=3`（成功）与 `result.error_code=3`（业务取消）。`/control` 也可能收到前端等其他发布者的消息。
 
-## 6. 常见结果
+## 7. 常见结果
 
 | `result.error_code` | 本版含义 |
 | --- | --- |
 | 0 | 已观察到完成状态 |
 | 3 | 已取消跟踪 |
 | 4 | 起飞缺少有限 z，或 Goto 缺少有限 xyz / 非零里程计时间戳 |
-| 6 | 降落时已在地面，或 Goto 时不是 IN_AIR |
+| 6 | 降落时已在地面，或 Goto / Return 时不是 IN_AIR |
 | 7 | 起飞请求时已有空中或起降过渡状态 |
-| 12 | 状态、连接、订阅者或 ROS 时间条件不满足 |
+| 12 | 状态、连接、订阅者或 ROS 时间条件不满足；Return 请求时已有 returned=true |
 | 19 | Goto 请求含 NaN 或 Inf |
 | 20 | Goto 原生目标 z < -0.1，现有 Planner 不支持 |
-| 21 | 已有 Takeoff、Land 或 Goto Action 正在跟踪 |
+| 21 | 已有 Takeoff、Land、Goto 或 Return Action 正在跟踪 |
 
-本说明中的案例用于用户运行测试。上述 6 条 pub 命令已在 ROS Noetic 环境通过 YAML 填充和 ROS 消息序列化校验；未向运行中的飞机发布测试命令。离线校验和编译不代表已经完成飞行验证。
+本说明中的案例用于用户运行测试。上述 8 条 pub 命令已通过 Noetic 离线 YAML 填充和 ROS 消息序列化校验；未向运行中的飞机发布测试命令。离线校验和编译不代表已经完成飞行验证。

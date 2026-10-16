@@ -15,6 +15,7 @@ actions:
   takeoff: /nav/flight/takeoff
   land: /nav/flight/land
   goto: /nav/flight/goto
+  return_home: /nav/flight/return_home
 
 # Goto 请求中相应值 <=0 时使用以下默认值；不写入 Planner/px4ctrl 参数。
 goto:

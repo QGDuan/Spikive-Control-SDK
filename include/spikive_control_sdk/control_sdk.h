@@ -16,7 +16,7 @@ namespace spikive_control_sdk
 {
 
 // 消息转发与状态缓存；使用单线程 ros::spin()。
-// 直接调用 takeoff()/land()/resume()/goTo() 只发消息，Action 准入、互斥、完成判定由节点负责。
+// 直接调用 takeoff()/land()/returnHome()/resume()/goTo() 只发消息，Action 准入、互斥、完成判定由节点负责。
 class ControlSdk
 {
 public:
@@ -42,9 +42,10 @@ public:
   bool hasControlSubscriber() const { return control_pub_.getNumSubscribers() > 0; }
   bool hasGoalSubscriber() const { return goal_pub_.getNumSubscribers() > 0; }
 
-  // 各发布一次既有 cmd=1 / cmd=2，返回发送时间戳；不是控制器 ACK。
+  // 各发布一次既有命令，返回发送时间戳；不是控制器 ACK。
   ros::Time takeoff();
   ros::Time land();
+  ros::Time returnHome();  // cmd=3，返航点由现有 FlightManager 决定。
   ros::Time resume();  // cmd=4，沿用 WayPoint 的 Continue 协议。
   ros::Time goTo(float x, float y, float z);  // 原生局部坐标直接转发给 GoalSet。
 

@@ -43,6 +43,11 @@ ros::Time ControlSdk::land()
   return sendCommand(2);
 }
 
+ros::Time ControlSdk::returnHome()
+{
+  return sendCommand(3);
+}
+
 ros::Time ControlSdk::resume()
 {
   return sendCommand(4);

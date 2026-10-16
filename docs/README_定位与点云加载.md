@@ -68,7 +68,7 @@ flowchart TD
 | `match_transform` / `transform_valid` | 本轮最新有效变换及其采样时间；失败或取消时也可能有中间候选变换，不能据此认为匹配成功 |
 | `tracking` | 是否有活动的 SDK 重定位 Action；取消后为 false，后端可能继续匹配 |
 | 地图切换 / 后端 idle | 使当前地图和匹配标志无效；活动重定位以 error=15 中止，需重新加载 |
-| 并发 | LoadMap 与 Relocalize 共享定位任务槽，忙时 error=21；现有三个飞行 Action 仍使用原飞行任务槽，未新增飞行状态门控 |
+| 并发 | LoadMap 与 Relocalize 共享定位任务槽，忙时 error=21；Takeoff、Land、Goto、Return 四个飞行 Action 使用原飞行任务槽，未新增飞行状态门控 |
 | 取消 | 仅结束 Action 跟踪，error=3；不清图、不发停止、不终止 SLAM 匹配 |
 
 定位操作应在起飞前完成。地图更新和成功匹配会影响既有 fusion_repub 输出坐标，SDK 没有新增飞行控制或飞行中禁止切图的策略。

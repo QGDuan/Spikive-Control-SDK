@@ -14,10 +14,12 @@
 
 ```mermaid
 flowchart LR
-  U[用户程序] -->|起飞 / 降落 / Goto Action| S[SDK：转发与监视]
+  U[用户程序] -->|起飞 / 降落 / Goto / Return Action| S[SDK：转发与监视]
   C[YAML / Config] -.-> S
-  S -->|/control：cmd=1、2、4| P[px4ctrl]
-  S -->|/goal_with_id：原生 xyz| G[Planner]
+  S -->|/control：cmd=1、2、3、4| P[px4ctrl]
+  S -->|/control：cmd=3| F[FlightManager：既有返航点]
+  F -->|/goal_with_id| G[Planner]
+  S -->|/goal_with_id：原生 xyz| G
   G -->|轨迹| P
   P -->|飞行设定值| M[MAVROS / 飞控]
   P -->|DroneState| S
@@ -42,12 +44,13 @@ flowchart LR
 | 起飞 | `/nav/flight/takeoff` → `/control`，`cmd=1` | 新的 `DroneState.tookoff=true` |
 | 降落 | `/nav/flight/land` → `/control`，`cmd=2` | 新的 `DroneState.landed=true` 且 MAVROS 为 `ON_GROUND`，连接有效 |
 | 目标点飞行 | `/nav/flight/goto` → `/control` 的 `cmd=4`，随后 `/goal_with_id` 的 `GoalSet` | 新 `reached=true`，且新里程计满足三维、水平距离阈值和稳定时长 |
+| 返航 | `/nav/flight/return_home` → `/control`，`cmd=3`；FlightManager 发布既有返航点 | 命令后先收到 `returned=false`，再收到更晚的 `returned=true && !landed`，连接有效且新 MAVROS 状态为 `IN_AIR` |
 | 上锁报告 | 读取 `/mavros/state` | 新的 `connected=true && armed=false` → `Land.disarmed=true` |
 | 取消 | 结束当前 Action 跟踪 | 返回 `success=false, error_code=3`；飞机继续原控制 |
 
 这里的“新”指消息 `header.stamp` 严格晚于本次命令。成功返回 `error_code=0`。**降落在确认着地后成功，是否上锁单独报告，不等待或执行上锁。** `disarmed=false` 表示尚未确认上锁；结果返回后不再更新。
 
-三个飞行 Action 共用一个任务槽，忙时拒绝新请求（`21`）。此互斥只覆盖本节点；前端、WayPoint 等其他 `/control` 或 `/goal_with_id` 发布者仍按原链路工作。发布命令不等于后端已接受，完成依据始终来自状态。
+四个飞行 Action 共用一个任务槽，忙时拒绝新请求（`21`）。此互斥只覆盖本节点；前端、WayPoint 等其他 `/control` 或 `/goal_with_id` 发布者仍按原链路工作。发布命令不等于后端已接受，完成依据始终来自状态。
 
 | Action 参数 | 本版处理 | 实际执行来源 |
 | --- | --- | --- |
@@ -55,9 +58,30 @@ flowchart LR
 | `climb_speed` | 预留，任何值均忽略 | 原公式 `vz = (hover_height - position_z) × 1` |
 | `descend_speed` | 预留，任何值均忽略 | px4ctrl 的 `landing_speed` |
 | Goto `speed` | 预留，有限值均忽略 | Planner 原有速度配置；GoalSet 无速度字段 |
-| 三个 `timeout` | 预留，不执行；Goto 仍检查有限值 | 没有任务超时或状态超时策略；无完成证据时等待或由客户端取消 |
+| 四个飞行 Action 的 `timeout` | 预留，不执行；Goto 仍检查有限值 | 没有任务超时或状态超时策略；无完成证据时等待或由客户端取消 |
 
-Action 的字段、类型、顺序保留 [V1.1 PDF](docs/specs/ROS接口规范V1.1.pdf) 定义（Goto 坐标语义按项目约定调整，见下表）。SDK 不生成 setpoint、不调用解锁/上锁/模式服务、不修改飞控参数。状态监视输出为现有 Action 的 feedback/result 和 C++ 状态访问接口，新增的 `/nav/status/localization` 见定位说明；其余 `/nav/status/*` 话题未扩展。
+Takeoff、Land、Goto 的字段、类型、顺序保留 [V1.1 PDF](docs/specs/ROS接口规范V1.1.pdf) 定义（Goto 坐标语义按项目约定调整）。Return 和 Relocalize 在 PDF 中只有接口名称，字段由 SDK 补充定义。SDK 不生成 setpoint、不调用解锁/上锁/模式服务、不修改飞控参数。状态监视输出为 Action 的 feedback/result 和 C++ 状态访问接口，新增的 `/nav/status/localization` 见定位说明；其余 `/nav/status/*` 话题未扩展。
+
+## Return：返航适配
+
+入口 `/nav/flight/return_home`，类型 `spikive_control_sdk/return_homeAction`，定义见 [return_home.action](action/return_home.action)。**PDF V1.1 只规定接口名称和 Action 类型；以下字段为 SDK 最小补充协议，不是 PDF 原文。**
+
+| 部分 | 字段 | 当前处理 |
+| --- | --- | --- |
+| Goal | `float32 timeout` | 预留，任何值均忽略并记录日志，不增加超时策略 |
+| Result | `bool success`、`uint8 error_code`、`string message` | 观察到本次完成条件后成功 `0`；取消 `3`；非空中拒绝 `6`；准入不满足或已有 returned=true 拒绝 `12`；忙时拒绝 `21` |
+| Feedback | `uint8 phase` | 接受时 `1 PRECHECK`；收到命令后 `returned=false` 为 `2 RETURNING`；成功 `4 DONE`。阶段 2 只表示正在跟踪，不能确认后端已经执行返航；不输出阶段 3 |
+| Feedback | `float32 progress` | 未完成 `0`，成功 `1`；不根据未知返航距离计算百分比 |
+
+准入沿用公共连接/状态检查，并要求 MAVROS `IN_AIR`、`/goal_with_id` 有订阅者，以及当前 `DroneState.returned=false`。SDK 只发送一次 `cmd=3`；不发送 Continue、不自行生成返航 GoalSet。必须按原系统启动 **FlightManager、Planner、px4ctrl 和状态转发**；订阅者数量不能证明这些节点都已正确工作。
+
+返航点来自 FlightManager 的 `init_x/init_y/init_z`。启用其已有 `use_autoloc_init` 时，XY 可取自 `/autoloc/initial_pose`，Z 仍使用 `init_z`。它**不会自动采用 SDK 起飞时的位置、Relocalize 的初始位姿或点云原点**。这些坐标必须与当前 Planner/定位/飞控坐标一致；SDK 不改写参数、不做坐标变换，重定位成功也不能单独证明 MAVROS 本地坐标已对齐。
+
+成功优先使用现有 `DroneState.returned`：px4ctrl 在轨迹分支中按 XY 距离 `< reach_dist` 设置 `is_returned`，其持续至少 3 s 且 `return_triggered=true` 后发布 `returned=true`。这不是 SDK 新增的稳定计时，也不是三维位置或航向均已到达的保证。SDK 额外要求本次命令后先观察到 `returned=false`，再观察到时间更晚的 `true && !landed`，并要求 MAVROS 连接有效和命令后的 `IN_AIR`，防止复用旧完成标志。
+
+原后端只在命令码变化时处理 Return；连续 `cmd=3` 不重新发布返航点。取消后立即再次请求只能跟踪后端仍在执行的返航，不能承诺重新派发；已报告 `returned=true` 时直接拒绝。若始终没有本次命令之后的 false→true 证据，任务会等待，客户端可取消；SDK 不插入额外控制命令来清标志。现有消息没有任务 ID/ACK，无法排除其他控制发布者干扰。
+
+**Return 成功仅表示控制器报告返航完成，不自动降落或上锁。** 如需降落，之后单独调用 Land。取消 Return 只结束跟踪，飞机继续既有控制。命令及监控见 [返航命令行测试](docs/README_命令行测试.md#4-return-返航测试)。
 
 ## Goto：V1.1 对应关系
 
@@ -131,7 +155,7 @@ PDF §1.3 的错误码表注明“仅做参考”，没有要求 Takeoff 必须�
 | `4 ERR_POSE_INVALID` | **部分检测** | 请求时未收到有效里程计 z，或 z 非有限值，则拒绝；不检查完整位姿、定位质量或数据年龄。任务中出现无效 z 只反馈 NaN，不自动终止。 |
 | `7 ERR_ALREADY_FLYING` | **已完成** | `tookoff=true`、`landed=false` 或 MAVROS 已知状态不是 ON_GROUND 时拒绝。 |
 | `12 ERR_PRECHECK_FAILED` | **已完成基础准入** | 缺 DroneState、MAVROS 未连接、ExtendedState 未知、控制话题无订阅者或 ROS 时间无效时拒绝；不代表完整飞行自检。 |
-| `21 ERR_BUSY` | **已完成本节点互斥** | 起飞、降落或 Goto Action 跟踪中拒绝新请求；不约束外部 `/control` 发布者。 |
+| `21 ERR_BUSY` | **已完成本节点互斥** | 起飞、降落、Goto 或 Return Action 跟踪中拒绝新请求；不约束外部 `/control` 发布者。 |
 | `2 ERR_TIMEOUT` | **未完成** | timeout 不生效，不会因等待时间到达而返回此码。 |
 | `19 ERR_PARAM_INVALID` | **未完成** | 三个预留 Goal 参数只记录日志，不做范围或有限值校验，也不返回此码。PDF 尚未给出具体合法范围。 |
 | 其他通用错误码 | **本 Takeoff 未接入** | 如定位质量不足、低电量、紧急状态等，没有对应检测或结果分支；不将通用参考表全部列为 Takeoff 强制要求。 |
@@ -159,13 +183,14 @@ PDF §1.3 的错误码表注明“仅做参考”，没有要求 Takeoff 必须�
 | `topics/odometry` / `topics/altitude` | `/mavros/local_position/odom` / `/mavros/altitude` |
 | `actions/takeoff` / `actions/land` | `/nav/flight/takeoff` / `/nav/flight/land` |
 | `actions/goto` | `/nav/flight/goto` |
+| `actions/return_home` | `/nav/flight/return_home` |
 | `goto/arrival_total_dist` / `goto/arrival_horiz_dist` | `0.30` m / `0.25` m |
 | `goto/stable_time` | `1.0` s |
 | `feedback_rate` | `10.0` Hz；只控制反馈频率 |
 
 定位配置位于同一 YAML 的 `localization/*`，按 id 生成后端话题，地图确认等待默认 5 s、状态发布默认 10 Hz。定位任务槽独立于现有飞行任务槽；初始位姿匹配应在起飞前完成。
 
-先按原流程启动 MAVROS、Planner、px4ctrl 及状态转发节点。SDK launch 只启动本节点：
+先按原流程启动 MAVROS、Planner、FlightManager、px4ctrl 及状态转发节点。SDK launch 只启动本节点：
 
 ```bash
 roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=1
@@ -202,9 +227,9 @@ catkin_make install -j2 -l2 -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
-Docker 中将 `sdk_source` 改为容器内源码路径。验收止于三个飞行 Action 生成、C++ 编译链接及安装，不启动飞行节点。开发 Skill：`$spikive-control-sdk`（`~/.codex/skills/spikive-control-sdk/SKILL.md`）。
+Docker 中将 `sdk_source` 改为容器内源码路径。验收止于四个飞行 Action 和定位接口生成、C++ 编译链接及安装，不启动飞行节点。开发 Skill：`$spikive-control-sdk`（`~/.codex/skills/spikive-control-sdk/SKILL.md`），Return 的新增约定以本包文档为准。
 
-2026-10-16 验证：在 Ubuntu 20.04 / ROS Noetic、MAVROS 1.20.1 Docker 环境中，仅构建上述三个包，Action 生成、SDK 库、节点编译链接和安装通过（启用 `-Wall -Wextra -Wpedantic`）。三个飞行 Action 字段已逐项核对 V1.1；命令行 README 中 6 条 pub 命令通过离线消息序列化检查，launch 参数展开及 Skill 格式检查通过。未运行飞行验证。此次本机编译日志：`/tmp/spikive-control-sdk-goto-noetic-IG6YNn.log`。
+2026-10-16 Return 验证：在 Ubuntu 20.04 / ROS Noetic、MAVROS 1.20.1 Docker 环境中，仅构建上述三个包，五个 Action（四个飞行 + Relocalize）、LoadMap 和 LocalizationStatus 生成，SDK 库与节点编译链接、安装通过；启用 `-Wall -Wextra -Wpedantic`，无编译警告。飞行 README 中 8 条 pub 命令和定位 README 中 3 条请求/取消命令均通过离线消息序列化检查；launch 参数展开、安装节点动态库依赖检查通过。Return 字段明确标记为 PDF 缺失部分的 SDK 补充定义，既有三个飞行 Action 字段未改动。未启动飞行节点或运行飞行验证。本机日志：`/tmp/spikive-control-sdk-return-noetic.log`、`/tmp/spikive-control-sdk-return-checks.log`。
 
 
 定位适配新增的离线测试不连接 ROS master，也不运行 ICP 或飞机节点：

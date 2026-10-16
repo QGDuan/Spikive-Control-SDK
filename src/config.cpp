@@ -43,6 +43,7 @@ Config Config::load(const ros::NodeHandle& private_nh)
   private_nh.param("actions/takeoff", config.takeoff_action, config.takeoff_action);
   private_nh.param("actions/land", config.land_action, config.land_action);
   private_nh.param("actions/goto", config.goto_action, config.goto_action);
+  private_nh.param("actions/return_home", config.return_home_action, config.return_home_action);
   private_nh.param("goto/arrival_total_dist", config.arrival_total_dist, config.arrival_total_dist);
   private_nh.param("goto/arrival_horiz_dist", config.arrival_horiz_dist, config.arrival_horiz_dist);
   private_nh.param("goto/stable_time", config.stable_time, config.stable_time);
@@ -81,7 +82,8 @@ void Config::validate() const
   }
   for (const auto* name : {&control_topic, &goal_topic, &drone_state_topic, &mavros_state_topic,
                            &extended_state_topic, &odometry_topic, &altitude_topic,
-                           &takeoff_action, &land_action, &goto_action, &load_map_service, &relocalize_action,
+                           &takeoff_action, &land_action, &goto_action, &return_home_action,
+                           &load_map_service, &relocalize_action,
                            &localization_status_topic, &localization_map_topic, &initial_pose_topic,
                            &match_status_topic, &match_transform_topic, &map_echo_topic})
   {
@@ -90,7 +92,7 @@ void Config::validate() const
       throw std::invalid_argument("Topic and action names must not be empty");
     }
   }
-  if (std::set<std::string>{takeoff_action, land_action, goto_action, relocalize_action}.size() != 4)
+  if (std::set<std::string>{takeoff_action, land_action, goto_action, return_home_action, relocalize_action}.size() != 5)
   {
     throw std::invalid_argument("Actions must use different names");
   }
