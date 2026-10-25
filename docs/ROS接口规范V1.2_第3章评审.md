@@ -2,9 +2,11 @@
 
 评审日期：2026-10-25。原文：[V1.2 PDF](specs/ROS接口规范V1.2.pdf)。基线：Control SDK `0aba861`；SLAM `main@c86c818`；Planner/WayPoint 按当前工作区源码核对，见[源码校验值](specs/V1.2_评审源码.sha256)。
 
-**本次只评审，不修改运行代码、消息定义或原生坐标。** 下列代码块保留原文，只修复 PDF 换行；表格中的“当前是否实现”指该行能力，不代表整个 V1.2 接口已提供。原生坐标与只改名转发方案见文末。
+**本次只评审，不修改运行代码、消息定义或原生坐标。** 原 PDF 定义保留作对照，采用方式以用户决定及表格为准。“当前是否实现”以本评审基线为准，不代表整个 V1.2 接口已提供；另一版本的成果单独注明来源。
 
-分类固定为以下三类；其他项目标“待归类”，只是未决标记，不是第四类。本次共 88 项：57 项可实现，15 项值得实现＋后续实现，4 项无必要实现／保持现有状态，12 项待归类。
+**统一约定：所有坐标要求沿用现有 SDK/SLAM 定义；Odometry、PointCloud 沿用源消息，只可映射话题名称。** 不新增 frame 名称、换轴或重定义数据。协方差沿用用户确认的另一版本成果，本基线尚未集成，未核验该版本提交。
+
+分类固定为以下三类；其他项目标“待归类”，只是未决标记，不是第四类。本次共 88 项：57 项可实现，18 项值得实现＋后续实现，10 项无必要实现／保持现有状态，3 项待归类。
 
 后续可直接指定：`将 3.1.2-yaw 放入“值得实现＋后续实现”，要求……`。只更新指定行、简短要求和本页汇总；保留原定义、稳定编号与源码依据。被拆分的旧编号保留指向新编号的说明。
 
@@ -14,19 +16,28 @@
 
 ## 值得实现＋后续实现
 
-15 项，均尚未实现：
+18 项，均尚未实现：
 
 - Takeoff：`3.1.1-target_altitude`、`3.1.1-phase-stabilizing`。
 - 速度与航向：`3.1.2-speed`、`3.1.2-yaw`、`3.1.3-speed`。
 - 全部飞行 Action 请求超时：`3.1.1-timeout`、`3.1.2-timeout`、`3.1.3-timeout`、`3.1.4-timeout`。
 - `3.1.1-climb_speed`、`3.1.4-descend_speed`：后续候选，**是否实施待确定，较复杂**。
 - FlightState 原待定项：`3.1.6-idle-precheck`、`3.1.6-holding`、`3.1.6-navigation-return`、`3.1.6-avoiding`。
+- 建图与配置：`3.3.1-map_path`、`3.3.2-process`、`3.4.1-result`。
 
 这里的 timeout 指四个飞行 Action 的请求字段；既有地图确认等待和 SLAM 内部匹配期限保持现状。
 
 ## 无必要实现／保持现有状态
 
-4 项：`3.1.2-enu` 沿用原生 world；`3.1.2-state-avoiding` 不增加；`3.1.3-phase-climbing`、`3.1.3-phase-landing` 保留现有返航阶段，不增加爬升/自动降落。
+10 项：
+
+- `3.1.2-enu`、`3.2.2-map-frame`、`3.5.1-frames`：沿用 SDK 原生坐标和 frame 名称。
+- `3.1.2-state-avoiding`、`3.1.3-phase-climbing`、`3.1.3-phase-landing`：保持现有飞行阶段。
+- `3.3.2-cancel-process`：不实现停止后处理。
+- `3.4.1-controller-threshold`：保留启动配置，禁止飞行中修改控制器阈值。
+- `3.5.1-covariance`：沿用另一版本成果，不重复开发；`3.5.1-rate`：沿用源频率，不强制 100 Hz。
+
+剩余待归类：`3.1.3-distance_to_home`；`3.3.3-initializing`、`3.3.3-processing` 定义不明确，待定。
 
 # 3. 详细定义
 
@@ -250,7 +261,7 @@ float64 elapsed_time          # 后端 elapsed_ms / 1000
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
 | `3.2.2-initial_pose` | initial_pose：原生地图初值 | 可实现 | 输入机体在地图 world 中的位姿，frame=world 或空；校验有限值、归一化四元数，covariance 透传但 ICP 不使用。[L]、[I]、[S] | 已实现 |
-| `3.2.2-map-frame` | initial_pose：原文 map 标签 | 待归类 | SDK 默认要求 world；改名不改变坐标。建议将注释改为“已加载地图的原生 world”，不要求后端改坐标。[L]、[U] | 尚未实现 |
+| `3.2.2-map-frame` | initial_pose：原文 map 标签 | 无必要实现／保持现有状态 | 不采用原文 map 标签，直接沿用现有 world；初值能力已由 3.2.2-initial_pose 实现，不改后端坐标。[L]、[U] | 尚未实现 |
 | `3.2.2-result` | success / error_code / message | 可实现 | 本轮开始状态后 localized 加新有效修正变换；failed 返回失败。状态与变换无共同请求 ID，不能保证原子配对。[L] | 已实现 |
 | `3.2.2-metrics` | fitness_score / threshold / attempt_count（Result、Feedback） | 可实现 | 读取 SLAM JSON 指标；fitness 越小越好，-1 未获得；不重复比较舍入后的阈值。[L]、[S] | 已实现 |
 | `3.2.2-transform` | transform_valid / match_transform | 可实现 | 把 diff_odom 的修正内容封装为 T_map_world；保留采样时间，不是机体地图位姿，也不广播 TF。[L]、[S] | 已实现 |
@@ -258,7 +269,7 @@ float64 elapsed_time          # 后端 elapsed_ms / 1000
 | `3.2.2-elapsed_time` | elapsed_time | 可实现 | 后端 elapsed_ms / 1000，单位 s。[I] | 已实现 |
 | `3.2.2-once` | 一次初始化匹配 | 可实现 | continuous_match=false；一次任务内默认连续 10 次合格确认，成功后停止地图 ICP，LIO 继续。[S]、[U] | 已实现 |
 
-本 Action 字段布局与现有 SDK 一致，初值坐标注释需修正。map→world 修正中的 world 指启动坐标；不要对已经对齐地图的导航 odom 再应用一次修正。
+本 Action 字段布局与现有 SDK 一致；初值采用 world。match_transform 保留 SDK 现有 map→world 表示法，其中 world 指启动坐标；它不是机体位姿，也不对已经对齐地图的导航 odom 再次应用。
 
 ## 3.3 建图
 
@@ -276,7 +287,7 @@ string message
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
 | `3.3.1-start` | 启动点云采集 | 可实现 | 可适配 WayPoint 新建 route→localization_cloud_record_start，依据带 request_id 的状态确认；不是启动 LIO 算法。[W] | 尚未实现 |
-| `3.3.1-map_path` | map_path | 待归类 | WayPoint 项目目录、SLAM bag 保存目录由启动配置决定；现有命令不能直接传入逐次任意保存路径。[W]、[B] | 尚未实现 |
+| `3.3.1-map_path` | map_path | 值得实现＋后续实现 | 后续支持请求保存路径；当前 WayPoint 项目目录、SLAM bag 目录由启动配置决定，缺少逐次路径入口。[W]、[B] | 尚未实现 |
 | `3.3.1-map_name` | map_name | 可实现 | 可缓存名称，在采集停止后映射为 WayPoint save_waypoints 的 name；需完整保存流程，非 start 时已生成地图。[W] | 尚未实现 |
 | `3.3.1-result` | success / error_code / message | 可实现 | 可把 WayPoint 本次 record_start 的确认/错误转换成服务结果；success 仅表示采集已开始。[W] | 尚未实现 |
 
@@ -295,8 +306,8 @@ string message
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
 | `3.3.2-stop` | cmd=1 停止 map 采集 | 可实现 | 可转 WayPoint localization_cloud_record_stop，等待状态确认；生成临时 PCD，具名项目保存需另外完成。[W] | 尚未实现 |
-| `3.3.2-process` | cmd=2 后处理 | 待归类 | 本参考链路未提供与此接口对应的后处理任务入口及完成协议；PCD 降采样不等于完整后处理。[W]、[B] | 尚未实现 |
-| `3.3.2-cancel-process` | cmd=3 停止后处理 | 待归类 | 无对应后处理任务标识、取消入口及已生成文件处置约定。[W]、[B] | 尚未实现 |
+| `3.3.2-process` | cmd=2 后处理 | 值得实现＋后续实现 | 后续补充任务入口及完成协议；当前参考链路未提供，PCD 降采样不等于完整后处理。[W]、[B] | 尚未实现 |
+| `3.3.2-cancel-process` | cmd=3 停止后处理 | 无必要实现／保持现有状态 | 按用户决定不实现；现有链路无对应后处理取消入口。[W]、[B] | 尚未实现 |
 | `3.3.2-result` | success / error_code / message | 可实现 | 停止采集可转换本次 record_stop 的状态；不支持的操作不能返回成功。[W] | 尚未实现 |
 
 WayPoint 停止采集还会发布 localization_pcl，可能切换定位地图；这不是无副作用的录制停止。
@@ -313,8 +324,8 @@ uint8    state   # 0 IDLE 1 INITIALIZING 2 MAPPING 3 MAPPING_FAILED 4 WAITING_FO
 | `3.3.3-header` | header / 1 Hz 上报（§2） | 可实现 | 可周期封装采集状态；快照发布时间不表示采集数据新鲜。[W]、[B] | 尚未实现 |
 | `3.3.3-idle-mapping` | state=0 IDLE / 2 MAPPING | 可实现 | 在“PCD 采集”范围内可映射 WayPoint idle/recording；不能解释为整个 SLAM 算法停止/运行。[W] | 尚未实现 |
 | `3.3.3-failure` | state=3 MAPPING_FAILED | 可实现 | 可映射本次采集/保存实际失败；busy、非法新请求等拒绝不能覆盖正在运行任务的状态。[W] | 尚未实现 |
-| `3.3.3-initializing` | state=1 INITIALIZING | 待归类 | 没有独立建图初始化完成信号；节点存在或已接收 start 都不足以证明初始化完成。[W]、[B] | 尚未实现 |
-| `3.3.3-processing` | state=4/5/6/7 后处理阶段 | 待归类 | 没有对应后处理状态链；recorded 或 bag 关闭不能等同 PROCESSING_DONE。[W]、[B] | 尚未实现 |
+| `3.3.3-initializing` | state=1 INITIALIZING | 待归类 | 定义不明确，待定；现有链路没有独立建图初始化完成信号。[W]、[B] | 尚未实现 |
+| `3.3.3-processing` | state=4/5/6/7 后处理阶段 | 待归类 | 定义不明确，待定；现有链路没有对应状态，recorded 或 bag 关闭不等于 PROCESSING_DONE。[W]、[B] | 尚未实现 |
 
 ## 3.4 参数配置
 
@@ -333,8 +344,8 @@ string message
 | --- | --- | --- | --- | --- |
 | `3.4.1-horizontal_distance` | horizontal_distance：SDK 到达监视 | 可实现 | 可设置 SDK 的 XY 距离比较阈值；当前只有 Goal/YAML 配置，没有本 Service。[F] | 尚未实现 |
 | `3.4.1-vertical_distance` | vertical_distance：SDK 到达监视 | 可实现 | 同源导航位置可算 abs(target_z−current_z)；需新增独立垂直判据，不能直接替换现有三维半径。[F]、[U] | 尚未实现 |
-| `3.4.1-controller-threshold` | 修改 Planner/控制器实际阈值 | 待归类 | px4ctrl reach_dist 启动读取且仅用于 XY；SDK 监视阈值不改变其控制行为。[P1] | 尚未实现 |
-| `3.4.1-result` | success / error_code / message | 可实现 | 可报告 SDK 参数校验/更新结果；是否影响活动任务及 stable_time 的来源需在实现前明确。[F] | 尚未实现 |
+| `3.4.1-controller-threshold` | 修改 Planner/控制器实际阈值 | 无必要实现／保持现有状态 | 禁止飞行中修改；reach_dist 保留既有启动配置，仅用于 XY。SDK 监视阈值不改写后端值。[P1] | 尚未实现 |
+| `3.4.1-result` | success / error_code / message | 值得实现＋后续实现 | 后续返回 SDK 参数校验/应用结果，不表示控制器阈值已修改；活动任务生效规则及 stable_time 来源仍需明确。[F] | 尚未实现 |
 
 ### 3.4.2 /nav/config/set_pointcloud_config — Set_pointcloud_config.srv
 
@@ -356,6 +367,11 @@ string message
 ## 3.5 数据上报
 
 ### 3.5.1 /nav/data/odom — nav_msgs/Odometry
+
+**采用现有输出**：`/drone_{id}_visual_slam/odom` → `/nav/data/odom`，类型为 `nav_msgs/Odometry`；`header.frame_id=world`、`child_frame_id=body`。Header、pose、twist、实际发布频率沿用源消息，不拼接 MAVROS 数据。协方差沿用另一版本成果。[U]
+
+<details>
+<summary>原 PDF 字段示意（仅供核对；map/base_link 不采用）</summary>
 
 ```text
 # nav_msgs/Odometry
@@ -382,18 +398,25 @@ geometry_msgs/TwistWithCovariance twist
          float64 x, y, z
 ```
 
+</details>
+
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
 | `3.5.1-pose` | pose.position / orientation | 可实现 | 导航 odom 可原样 relay 到 /nav/data/odom；保留已有 world/body，不改数值。[U] | 尚未实现 |
 | `3.5.1-header` | header.seq / stamp | 可实现 | 无代码 relay 保留原 Header；stamp 是源里程计采样时间，不改为转发时间。[U]、[O] | 尚未实现 |
-| `3.5.1-frames` | header.frame_id=map / child_frame_id=base_link | 待归类 | 源为 world/body；没有证据证明只是同义标签。建议原文沿用源 frame，不能仅改字符串。[T]、[U]、[O] | 尚未实现 |
-| `3.5.1-twist` | twist.linear / angular | 待归类 | fusion_repub 未填 twist，默认零不表示静止；拼接 MAVROS 向量需先证明坐标与采样时刻一致。[U]、[O] | 尚未实现 |
-| `3.5.1-covariance` | Pose/Twist 协方差 | 待归类 | 原文展开漏了各自 float64[36] covariance；标准类型自带，但源未填有效估计，零值不代表零误差。[U]、[O] | 尚未实现 |
-| `3.5.1-rate` | 100 Hz 新数据（§2） | 待归类 | 源按里程计回调输出；当前资料不能保证 100 Hz。relay 不提频，不重复旧样本冒充新数据。[U] | 尚未实现 |
+| `3.5.1-frames` | 原文 map / base_link 要求 | 无必要实现／保持现有状态 | 沿用 header.frame_id=world、child_frame_id=body；不采用原文标签，也不另起坐标系名称。[T]、[U] | 尚未实现 |
+| `3.5.1-twist` | twist.linear / angular：原样上报 | 可实现 | 透传现有 twist，不补算或拼接 MAVROS；当前基线 fusion_repub 未填有效速度，默认零不作为静止判断。[U]、[O] | 尚未实现 |
+| `3.5.1-covariance` | Pose/Twist 协方差 | 无必要实现／保持现有状态 | 用户确认另一版本已实现，沿用该成果，不重复开发；本基线未集成，版本提交未核验。标准 float64[36] 字段保留并随源消息透传。[U]、[O] | 尚未实现 |
+| `3.5.1-rate` | 原文 100 Hz 新数据要求（§2） | 无必要实现／保持现有状态 | 改为沿用 SLAM 实际输出频率；不强制 100 Hz、不重复旧样本提频。[U] | 尚未实现 |
 
-原文为标准消息的字段展开示意，不是可直接生成的 .msg 文件；应使用系统 nav_msgs/Odometry，不能另造删减类型。
+使用现有标准 nav_msgs/Odometry，不另造消息类型。上表“尚未实现”对应本评审基线及尚未部署的 /nav/data/odom 映射；不否定另一版本已完成协方差，也不表示仍需实现 map/base_link 或固定 100 Hz。
 
 ### 3.5.2 /nav/data/pointcloud — sensor_msgs/PointCloud2
+
+**采用 SLAM 实际输出**：`/drone_{id}_cloud_registered` → `/nav/data/pointcloud`，类型为 `sensor_msgs/PointCloud2`，frame=world。这是当前帧配准点云；SDK 只映射话题名称，内容、时间戳和发布频率全部沿用 SLAM，不自行重定义点结构。[U]
+
+<details>
+<summary>原 PDF 字段示意（仅供核对；实际内容以 SLAM 消息为准）</summary>
 
 ```text
 # sensor_msgs/PointCloud2
@@ -428,30 +451,32 @@ uint8 FLOAT32 = 7
 uint8 FLOAT64 = 8
 ```
 
+</details>
+
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
-| `3.5.2-header` | header.seq / stamp / frame_id | 可实现 | `/drone_{id}_cloud_registered` 可原样 relay；world，保留采样时间；这是当前帧配准点云，不是全量静态地图。[U] | 尚未实现 |
-| `3.5.2-layout` | height / width / fields / is_bigendian / point_step / row_step / data | 可实现 | 直接保留 PointCloud2 布局与载荷；客户端按 fields/offset/步长解码，不假定固定内存布局。[U]、[PC] | 尚未实现 |
-| `3.5.2-is_dense` | is_dense | 可实现 | 原样保留；原注释需明确 true 表示没有无效点，而非“含无效点”。[PC] | 尚未实现 |
-| `3.5.2-pointfield` | PointField.name / offset / datatype / count；8 个类型常量 | 可实现 | 采用标准 sensor_msgs/PointField；当前稳定输出使用 PointXYZI，实际布局以消息 fields 为准。[U]、[PC] | 尚未实现 |
+| `3.5.2-header` | header.seq / stamp / frame_id | 可实现 | SLAM Header 原样上报，保留 world 和采样时间；仅话题改名。[U] | 尚未实现 |
+| `3.5.2-layout` | height / width / fields / is_bigendian / point_step / row_step / data | 可实现 | 全部取 SLAM 消息原值，不重建点数组、不另定点数、步长或布局；客户端按实际 fields 解码。[U]、[PC] | 尚未实现 |
+| `3.5.2-is_dense` | is_dense | 可实现 | 直接保留 SLAM 发布值，SDK 不重算；标准含义为 true 表示无无效点。[U]、[PC] | 尚未实现 |
+| `3.5.2-pointfield` | PointField.name / offset / datatype / count；8 个类型常量 | 可实现 | 使用 SLAM 实际 fields；当前修正点云代码使用 PointXYZI，具体字段/offset/datatype/count 以输出为准，SDK 不新增字段。[U]、[PC] | 尚未实现 |
 
-若启用 §3.4.2 的限频/降采样，就属于处理支路；仅改名转发本身不会改变频率或点数。
+本节只做原样映射；§3.4.2 的限频/降采样是另列的可实现能力，尚未部署，不默认应用到此输出。
 
 ## 坐标与直接映射
 
-`W₀` 表示标定后的启动坐标，`Wₘ` 表示已加载地图坐标，`B` 表示既有运动中心 body。它们是解释用符号，不新增 ROS frame。
+全部接口沿用 SDK/SLAM 源码中的坐标名称和含义。输入与导航输出使用 world，导航机体系使用 body；既有地图回显 map、匹配结果 map→world 原样保留，不把所有 frame 字符串统一改成 world。
 
 | 数据 | 原点、轴向及关系 | 实际标签 |
 | --- | --- | --- |
 | 标定启动位姿/点云 | 沿用 LiDAR→运动中心的既有 R/T 与 init_translation。位姿为外参共轭变换再加初始平移；点云为 Rp+t+初始平移。水平轴随原生启动/标定约定，资料不保证东/北。[T] | world / body |
 | 地图 PCD、初值、Goto | 原点和水平轴沿用地图生成时的 world；默认飞行约定 z 向上。位置是绝对坐标，不是当前位置偏移；米、弧度，ROS 四元数按 x/y/z/w 表示。初值是机体在地图中的位姿。[T]、[W]、[P1] | SDK 默认 world |
-| 匹配修正 | C 把 W₀ 转到 Wₘ；初值 C=T(Wₘ←B)×inverse(T(W₀←B))，之后 ICP 修正。SDK 结果 map→world 表示该修正。[S]、[L] | 后端 map/body 标签不等于真实机体位姿；SDK 封装为 map/world |
-| 稳定导航输出 | 匹配前用 W₀；成功后 T(Wₘ←B)=C×T(W₀←B)，点云同步应用 C；两阶段都叫 world。body 与客户 base_link 是否同原点同轴，需安装标定证据。[U] | 始终 world / body |
+| 匹配修正 | 将启动位姿对齐地图；初值修正为“地图中的初始机体位姿×启动机体位姿的逆”，随后 ICP 修正。SDK map→world 表示该修正。[S]、[L] | 后端 map/body 标签不等于真实机体位姿；SDK 既有封装为 map/world |
+| 稳定导航输出 | 匹配前沿用启动坐标，成功后应用既有地图修正，点云同步修正；两阶段都叫 world。保留 body，不改为 base_link。[U] | 始终 world / body |
 | MAVROS local odom | 飞控本地估计参考系；不能因收到 vision_pose 就认定原点、航向与地图一致。仅速度模长可避免向量方向混用。[P1]、[U] | 读取实际 Header，不替换标签 |
 
 现有 traj_server 的航向按 `atan2(dy, dx)` 定义：0 沿原生 +x，正向由 +x 转向 +y；这不等于已经支持客户传入 yaw。[P3]
 
-用户已确认 Goto 直接使用原生 world，原文“ENU”不作为地理东/北约束。姿态与坐标数值原样保留；不新增 NED/ENU 轴交换或重复外参变换。
+用户已确认全部坐标要求以现有 SDK 定义为准，原文“ENU”不作为地理东/北约束。姿态与坐标数值原样保留；不新增 NED/ENU 轴交换或重复外参变换。
 
 ```mermaid
 flowchart LR
@@ -469,7 +494,7 @@ rosrun topic_tools relay /drone_2_visual_slam/odom /nav/data/odom
 rosrun topic_tools relay /drone_2_cloud_registered /nav/data/pointcloud
 ```
 
-这只能提供“源消息原样上报”，不能补齐有效 twist/协方差、保证 100 Hz，或把 world/body 转成 map/base_link。完整 V1.2 数据语义仍按各行处理。
+以上映射按当前决定保留源消息及实际频率；twist 不补算，协方差沿用另一版本成果并随源消息透传，坐标保持 world/body。命令示例未部署，不表示数据上报接口已上线。
 
 ## 依据索引
 
