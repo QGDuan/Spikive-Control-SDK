@@ -1,0 +1,4 @@
+interface:
+  display_name: "Spikive SDK 接口评审与开发"
+  short_description: "核对 ROS 接口、原生坐标与后端能力，维护三类决策及轻量 SDK"
+  default_prompt: "使用 $spikive-control-sdk 按现有 SLAM/Planner 逻辑核对接口，保留原生坐标，按稳定编号维护三类决策并说明实际实现状态。"
