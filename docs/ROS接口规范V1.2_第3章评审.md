@@ -4,17 +4,29 @@
 
 **本次只评审，不修改运行代码、消息定义或原生坐标。** 下列代码块保留原文，只修复 PDF 换行；表格中的“当前是否实现”指该行能力，不代表整个 V1.2 接口已提供。原生坐标与只改名转发方案见文末。
 
-分类固定为以下三类；其他项目标“待归类”，只是未决标记，不是第四类。本次共 88 项：55 项可实现，33 项待归类。
+分类固定为以下三类；其他项目标“待归类”，只是未决标记，不是第四类。本次共 88 项：57 项可实现，15 项值得实现＋后续实现，4 项无必要实现／保持现有状态，12 项待归类。
 
 后续可直接指定：`将 3.1.2-yaw 放入“值得实现＋后续实现”，要求……`。只更新指定行、简短要求和本页汇总；保留原定义、稳定编号与源码依据。被拆分的旧编号保留指向新编号的说明。
 
 ## 可实现
 
-55 项：已实现 26，部分实现 1，尚未实现 28。范围为已有命令/状态复用、消息转换、SDK 距离监视及独立数据上报处理；逐项编号见正文。
+57 项：已实现 26，部分实现 1，尚未实现 30。新增确认：`3.1.4-phase-ground-detect` 复用 MAVROS 已着地信号；`3.1.5-stop` 复用既有位置保持。两项接口适配均尚未实现，其余逐项见正文。
 
 ## 值得实现＋后续实现
 
+15 项，均尚未实现：
+
+- Takeoff：`3.1.1-target_altitude`、`3.1.1-phase-stabilizing`。
+- 速度与航向：`3.1.2-speed`、`3.1.2-yaw`、`3.1.3-speed`。
+- 全部飞行 Action 请求超时：`3.1.1-timeout`、`3.1.2-timeout`、`3.1.3-timeout`、`3.1.4-timeout`。
+- `3.1.1-climb_speed`、`3.1.4-descend_speed`：后续候选，**是否实施待确定，较复杂**。
+- FlightState 原待定项：`3.1.6-idle-precheck`、`3.1.6-holding`、`3.1.6-navigation-return`、`3.1.6-avoiding`。
+
+这里的 timeout 指四个飞行 Action 的请求字段；既有地图确认等待和 SLAM 内部匹配期限保持现状。
+
 ## 无必要实现／保持现有状态
+
+4 项：`3.1.2-enu` 沿用原生 world；`3.1.2-state-avoiding` 不增加；`3.1.3-phase-climbing`、`3.1.3-phase-landing` 保留现有返航阶段，不增加爬升/自动降落。
 
 # 3. 详细定义
 
@@ -42,12 +54,12 @@ float32 progress               # 0.0~1.0
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
 | `3.1.1-execute` | 转发起飞命令 | 可实现 | SDK → `/control` cmd=1；原控制器执行。[F]、[C]、[P1] | 已实现 |
-| `3.1.1-target_altitude` | target_altitude | 待归类 | 请求值忽略；实际为启动时 hover_height，由 init_z 传入，不等于请求的相对地面高度。[F]、[P1] | 尚未实现 |
-| `3.1.1-climb_speed` | climb_speed | 待归类 | 请求值忽略；现有 vz=(hover_height−position_z)×1，无逐次起飞速度入口。[P1] | 尚未实现 |
-| `3.1.1-timeout` | timeout | 待归类 | 字段保留但不计时；超时后只结束跟踪还是改变控制，原文未明确。[F] | 尚未实现 |
+| `3.1.1-target_altitude` | target_altitude | 值得实现＋后续实现 | 请求值当前忽略；实际为启动时 hover_height，由 init_z 传入。后续需解决相对起飞点高度与既有控制入口的对应。[F]、[P1] | 尚未实现 |
+| `3.1.1-climb_speed` | climb_speed | 值得实现＋后续实现 | 是否实施待确定，较复杂；当前忽略请求值，vz=(hover_height−position_z)×1，无逐次起飞速度入口。[P1] | 尚未实现 |
+| `3.1.1-timeout` | timeout | 值得实现＋后续实现 | 当前保留但不计时；后续增加超时跟踪，终止语义待定，不据此扩展飞机控制。[F] | 尚未实现 |
 | `3.1.1-result` | success / error_code / message | 可实现 | 新 tookoff=true 且 MAVROS 连接有效；拒绝/取消返回原因。成功不确认请求高度。[F] | 已实现 |
 | `3.1.1-phase-existing` | phase=1/2/4 | 可实现 | 基础准入→PRECHECK；新控制器状态/MAVROS TAKEOFF→CLIMBING；tookoff→DONE。[F] | 已实现 |
-| `3.1.1-phase-stabilizing` | phase=3 STABILIZING | 待归类 | 没有独立稳定状态和稳定判据；tookoff 不能证明持续稳定悬停。[P1] | 尚未实现 |
+| `3.1.1-phase-stabilizing` | phase=3 STABILIZING | 值得实现＋后续实现 | 后续明确稳定判据与观察时长；现有 tookoff 不能证明持续稳定悬停，无独立稳定状态。[P1] | 尚未实现 |
 | `3.1.1-current_altitude` | current_altitude | 可实现 | MAVROS 当前 z−本次命令前 z，m；无效样本 NaN。仅反馈，不控制目标高度。[F]、[C] | 已实现 |
 | `3.1.1-progress` | progress | 可实现 | 未完成 0，完成 1；没有连续百分比。[F] | 已实现 |
 
@@ -76,14 +88,14 @@ float32 current_speed
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
 | `3.1.2-position` | position：原生目标点 | 可实现 | xyz 原样转 GoalSet.goal；Continue cmd=4→0.2 s→GoalSet，不交换轴。[F]、[C]、[G] | 已实现 |
-| `3.1.2-enu` | position：地理 ENU 含义 | 待归类 | 当前是原生 world；无证据保证 x 东、y 北。建议原文注明“项目原生局部 world”。[T]、[U] | 尚未实现 |
-| `3.1.2-speed` | speed | 待归类 | 请求值忽略；GoalSet 无速度字段，速度由 Planner 既有配置决定。[F]、[G] | 尚未实现 |
-| `3.1.2-yaw` | yaw / yaw_enable=true | 待归类 | GoalSet 无 yaw；traj_server 自算航向。PositionCommand 有 yaw 不代表存在目标航向输入。[G]、[P3] | 尚未实现 |
+| `3.1.2-enu` | position：地理 ENU 含义 | 无必要实现／保持现有状态 | 按用户决定直接用原生 world，不要求地理东/北、不换轴；world 转发已由 3.1.2-position 实现，地理 ENU 本身不实现。[T]、[U] | 尚未实现 |
+| `3.1.2-speed` | speed | 值得实现＋后续实现 | 当前忽略请求值；GoalSet 无速度字段，沿用 Planner 配置。后续需明确逐次速度入口。[F]、[G] | 尚未实现 |
+| `3.1.2-yaw` | yaw / yaw_enable=true | 值得实现＋后续实现 | 后续明确目标航向入口；当前 GoalSet 无 yaw，traj_server 自算航向，PositionCommand 的输出字段不是输入接口。[G]、[P3] | 尚未实现 |
 | `3.1.2-yaw-default` | yaw_enable=false：内部默认航向 | 可实现 | 保留 traj_server 的既有航向逻辑；SDK 尚无 yaw_enable 字段。[P3] | 部分实现 |
-| `3.1.2-timeout` | timeout | 待归类 | 当前预留；超时终止语义未约定。[F] | 尚未实现 |
+| `3.1.2-timeout` | timeout | 值得实现＋后续实现 | 当前预留；后续增加超时跟踪，终止语义待定。[F] | 尚未实现 |
 | `3.1.2-result` | success / error_code / message | 可实现 | 新 reached 加同源里程计距离/稳定时长；V1.2 删掉阈值 Goal 和 final_distance，线协议需另行调整。[F] | 已实现 |
 | `3.1.2-state-existing` | state=1/3/4 | 可实现 | 跟踪 NAVIGATING；reached 与距离满足后 HOLDING；样本稳定后 DONE，不另发悬停命令。[F] | 已实现 |
-| `3.1.2-state-avoiding` | state=2 AVOIDING | 待归类 | Planner 无对外完整 FSM 状态；重规划也不等于正在避障。[P2] | 尚未实现 |
+| `3.1.2-state-avoiding` | state=2 AVOIDING | 无必要实现／保持现有状态 | 按用户决定不增加 Goto 避障阶段；Planner 无对外完整 FSM 状态，重规划不等于正在避障。[P2] | 尚未实现 |
 | `3.1.2-distance` | distance_total / distance_horizontal | 可实现 | 目标减 `/drone_{id}_visual_slam/odom`：三维范数 / XY 范数，m；无效为 NaN。[F]、[U] | 已实现 |
 | `3.1.2-current_speed` | current_speed | 可实现 | MAVROS odom 线速度模长，m/s；SLAM 输出未填 twist，不能当作速度零。[F]、[U] | 已实现 |
 
@@ -109,12 +121,12 @@ float32 distance_to_home
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
 | `3.1.3-execute` | 转发返航命令 | 可实现 | cmd=3；FlightManager 发布既有 init_x/y/z（可选 autoloc 更新 XY）。不自动采用 SDK 起飞点。[C]、[P4] | 已实现 |
-| `3.1.3-speed` | speed | 待归类 | 当前 Action 无此字段；后端没有逐次返航速度输入。[R]、[P4] | 尚未实现 |
-| `3.1.3-timeout` | timeout | 待归类 | 当前预留，未定义超时后的控制行为。[F] | 尚未实现 |
+| `3.1.3-speed` | speed | 值得实现＋后续实现 | 当前 Action 无此字段，后端没有逐次返航速度输入；后续需明确入口。[R]、[P4] | 尚未实现 |
+| `3.1.3-timeout` | timeout | 值得实现＋后续实现 | 当前预留；后续增加超时跟踪，终止语义待定。[F] | 尚未实现 |
 | `3.1.3-result` | success / error_code / message | 可实现 | 新 returned 先 false 后 true，并检查连接、未着地和新 IN_AIR；只确认现有返航状态。[F] | 已实现 |
 | `3.1.3-phase-arrived` | phase=2 ARRIVED | 可实现 | 可把已确认的 returned 完成条件映射为 ARRIVED；当前 2 表示 RETURNING，4 表示 DONE。[F]、[R] | 尚未实现 |
-| `3.1.3-phase-climbing` | phase=1 CLIMBING | 待归类 | 没有独立返航爬升阶段；现有 1 是 PRECHECK，不能直接套用编号。[R]、[P4] | 尚未实现 |
-| `3.1.3-phase-landing` | phase=4 LANDING | 待归类 | 现有返航不自动降落；现有 4 是 DONE。是否串联 Land 尚未约定。[R]、[P4] | 尚未实现 |
+| `3.1.3-phase-climbing` | phase=1 CLIMBING | 无必要实现／保持现有状态 | 与现有 1=PRECHECK 含义冲突，后端无独立返航爬升阶段；按用户决定不增加。[R]、[P4] | 尚未实现 |
+| `3.1.3-phase-landing` | phase=4 LANDING | 无必要实现／保持现有状态 | 与现有 4=DONE 含义冲突，返航不自动降落；按用户决定不串联 Land，降落单独请求。[R]、[P4] | 尚未实现 |
 | `3.1.3-distance_to_home` | distance_to_home | 待归类 | 没有唯一的返航目标确认话题；GoalSet 混有其他目标，配置 home 也可能被 autoloc 更新。[P4] | 尚未实现 |
 
 兼容性：V1.2 增加 speed，phase 含义改动，并用 distance_to_home 替换 progress。现有 returned 不是返航目标 ACK；FlightManager 缺失/延迟时存在沿旧目标误报完成的限制。
@@ -139,14 +151,16 @@ float32 height     # 距地面高度 m
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
 | `3.1.4-execute` | 转发降落命令 | 可实现 | cmd=2；下降控制由 px4ctrl 执行。[C]、[P1] | 已实现 |
-| `3.1.4-descend_speed` | descend_speed | 待归类 | 请求值忽略；执行启动配置 landing_speed。[F]、[P1] | 尚未实现 |
-| `3.1.4-timeout` | timeout | 待归类 | 当前预留，未执行任务超时。[F] | 尚未实现 |
+| `3.1.4-descend_speed` | descend_speed | 值得实现＋后续实现 | 是否实施待确定，较复杂；当前忽略请求值，执行启动配置 landing_speed，无逐次下降速度入口。[F]、[P1] | 尚未实现 |
+| `3.1.4-timeout` | timeout | 值得实现＋后续实现 | 当前预留；后续增加超时跟踪，终止语义待定。[F] | 尚未实现 |
 | `3.1.4-result` | success / error_code / message | 可实现 | 新 landed 与新 MAVROS ON_GROUND 共同确认，且连接有效；不要求自动上锁。[F] | 已实现 |
 | `3.1.4-phase-existing` | phase=1/3/4 | 可实现 | IN_AIR/LANDING→DESCENDING；确认着地→TOUCHDOWN；同时有新 connected 且 !armed→DISARMED。[F] | 已实现 |
-| `3.1.4-phase-ground-detect` | phase=2 GROUND_DETECT | 待归类 | MAVROS LANDING 不能代表触地检测，现有链路没有独立信号。[F]、[M] | 尚未实现 |
+| `3.1.4-phase-ground-detect` | phase=2 GROUND_DETECT | 可实现 | 按用户要求复用命令后新的 MAVROS extended_state.landed_state=ON_GROUND；当前完成检查已读取该信号，但尚未输出 phase=2。[F]、[M] | 尚未实现 |
 | `3.1.4-height` | height | 可实现 | MAVROS Altitude.bottom_clearance 下方净空，有限且非负；否则 NaN。不是世界坐标 z。[C] | 已实现 |
 
 兼容性：V1.2 删除现有 Result.disarmed；当前消息定义仍保留，不能直接与删字段后的客户端连接。
+
+GROUND_DETECT 按“飞控确认已着地”解释；ON_GROUND 不提供提前触地或接近地面状态，LANDING 也不代表触地。它可与 TOUCHDOWN 共用着地证据，不承诺两个独立、持续可观察的阶段。
 
 ### 3.1.5 /nav/safety/emergency — EmergencyCmd.srv
 
@@ -161,11 +175,11 @@ string message
 | 编号 | 字段或能力 | 分类 | 现有来源及处理 | 当前是否实现 |
 | --- | --- | --- | --- | --- |
 | `3.1.5-hover` | cmd=1 HOVER：沿用既有保持 | 可实现 | 在既有轨迹控制分支可转控制 cmd=5，保持约 0.2 s 前的位置；不承诺全模式悬停或收到执行 ACK。[P1] | 尚未实现 |
-| `3.1.5-stop` | cmd=2 STOP 急停 | 待归类 | 现有 cmd=5 是位置保持，不是停桨；急停与 HOVER 的区别、恢复及优先级未定义。[P1] | 尚未实现 |
+| `3.1.5-stop` | cmd=2 STOP：位置保持 | 可实现 | 按用户定义转控制 cmd=5，复用既有轨迹分支的位置保持（约 0.2 s 前位置）；沿用生效条件，不承诺全模式保持。[P1] | 尚未实现 |
 | `3.1.5-resume` | cmd=3 RESUME：解除既有保持 | 可实现 | 可转控制 cmd=4；FlightManager 发当前位置，不恢复被替换的旧航线。[C]、[P4] | 尚未实现 |
 | `3.1.5-result` | success / error_code / message | 可实现 | 可报告 SDK 准入和转发结果；后端无命令 ACK，不能将 success 解释成已悬停或已急停。[C]、[P1] | 尚未实现 |
 
-仅评估既有命令封装，不承诺所有飞行阶段均支持。HOVER/STOP 的区别和 RESUME 的恢复范围需要后续确认。
+HOVER/STOP 均按既有位置保持封装，不停桨；success 只表示准入及转发，不确认已经保持。RESUME 沿用 cmd=4，发送当前位置，不恢复旧航线。Emergency 服务尚未实现。
 
 ### 3.1.6 /nav/status/flight_state — FlightState.msg
 
@@ -179,13 +193,15 @@ uint8    state            # IDLE(0) PRECHECK(1) TAKING_OFF(2) HOLDING(3) NAVIGAT
 | `3.1.6-header` | header | 可实现 | 可封装已采用状态的时间信息；若为汇总发布时间，须注明不等于源数据新鲜度。[M] | 尚未实现 |
 | `3.1.6-takeoff-landing` | state=2 TAKING_OFF / 7 LANDING | 可实现 | 可分别转换 MAVROS ExtendedState.TAKEOFF / LANDING；不与 Action phase 数值直接互拷。[M] | 尚未实现 |
 | `3.1.6-landed` | state=8 LANDED | 可实现 | 可用 MAVROS ON_GROUND 配合 DroneState.landed；后者单独为真也可能在起降过渡态。[P1]、[M] | 尚未实现 |
-| `3.1.6-idle-precheck` | state=0 IDLE / 1 PRECHECK | 待归类 | 未运行任务不等于系统就绪；缺少完整自检状态和无数据枚举，不能把缺消息映射成 IDLE。[P2]、[F] | 尚未实现 |
-| `3.1.6-holding` | state=3 HOLDING | 待归类 | reached 是到达标志；当前没有全系统悬停确认。SDK HOLDING 仅表示自身 Goto 稳定观察。[P1]、[F] | 尚未实现 |
-| `3.1.6-navigation-return` | state=4 NAVIGATING / 6 RETURNING | 待归类 | SDK 只知道自身任务；不能据此覆盖前端/WayPoint 外部命令。全系统状态归属、优先级未定义。[F]、[P2] | 尚未实现 |
-| `3.1.6-avoiding` | state=5 AVOIDING | 待归类 | 内部 REPLAN_TRAJ 未发布为完整状态消息，且重规划并非必然避障；DataDisp 无对应枚举。[P2] | 尚未实现 |
+| `3.1.6-idle-precheck` | state=0 IDLE / 1 PRECHECK | 值得实现＋后续实现 | 未运行任务不等于系统就绪；缺少完整自检状态和无数据枚举，不能把缺消息映射成 IDLE。[P2]、[F] | 尚未实现 |
+| `3.1.6-holding` | state=3 HOLDING | 值得实现＋后续实现 | reached 是到达标志；当前没有全系统悬停确认。SDK HOLDING 仅表示自身 Goto 稳定观察。[P1]、[F] | 尚未实现 |
+| `3.1.6-navigation-return` | state=4 NAVIGATING / 6 RETURNING | 值得实现＋后续实现 | SDK 只知道自身任务；不能据此覆盖前端/WayPoint 外部命令。全系统状态归属、优先级未定义。[F]、[P2] | 尚未实现 |
+| `3.1.6-avoiding` | state=5 AVOIDING | 值得实现＋后续实现 | 内部 REPLAN_TRAJ 未发布为完整状态消息，且重规划并非必然避障；DataDisp 无对应枚举。[P2] | 尚未实现 |
 | `3.1.6-rate` | 20 Hz 上报（§2） | 可实现 | 可由 SDK 定时发布状态快照；不能将重复缓存当作 20 Hz 新观测。[M] | 尚未实现 |
 
 原枚举没有 UNKNOWN/INVALID；未知、断连、状态冲突的表示方式待明确。Planner 内部 FSM 与这里的飞行状态枚举不是一一对应关系。
+
+用户已将本节原待定项全部列入后续实现。`3.1.6-avoiding` 是全局状态上报；`3.1.2-state-avoiding` 是 Goto 反馈，两者按各自决定处理。
 
 ## 3.2 地图加载/重定位
 
@@ -435,7 +451,7 @@ uint8 FLOAT64 = 8
 
 现有 traj_server 的航向按 `atan2(dy, dx)` 定义：0 沿原生 +x，正向由 +x 转向 +y；这不等于已经支持客户传入 yaw。[P3]
 
-缺少地理航向标定时，PDF 的“ENU”应解释为待澄清要求，不能由 SDK 擅自认定。姿态与坐标数值原样保留；不新增 NED/ENU 轴交换或重复外参变换。
+用户已确认 Goto 直接使用原生 world，原文“ENU”不作为地理东/北约束。姿态与坐标数值原样保留；不新增 NED/ENU 轴交换或重复外参变换。
 
 ```mermaid
 flowchart LR
@@ -469,7 +485,7 @@ rosrun topic_tools relay /drone_2_cloud_registered /nav/data/pointcloud
 
 ## 本次检查
 
-15 个接口及原文字段逐项覆盖；只填“可实现”，其余保留“待归类”。未修改源 PDF、SDK/SLAM/Planner 运行代码或消息定义。检查章节/字段、链接、分类汇总和 Skill 格式；本轮没有重新编译或执行 ROS/飞机测试，历史编译记录不作为本版新增接口已完成的证明。
+15 个接口及原文字段逐项覆盖；按用户决定更新三类，未指定项保留“待归类”。未修改源 PDF、SDK/SLAM/Planner 运行代码或消息定义。检查章节/字段、链接、分类汇总和 Skill 格式；本轮没有重新编译或执行 ROS/飞机测试，历史编译记录不作为本版新增接口已完成的证明。
 
 原 PDF SHA-256：`959222aa4be5b108fb09a6c9a5eb0e00b85627c411c53c8d7a2c985f58e953e7`。
 

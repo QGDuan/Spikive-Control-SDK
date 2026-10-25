@@ -2,7 +2,7 @@
 
 **一个转发命令、监视状态、整理接口的 ROS1 Noetic C++ SDK。** 用户提交 Action，SDK 转发一次已有命令，再把控制器和 MAVROS 状态转成反馈与结果。实际飞行仍由现有 Planner、px4ctrl 和飞控执行。
 
-**V1.2 逐项核对**：[第 3 章评审与三类整理](docs/ROS接口规范V1.2_第3章评审.md)。本次只填“可实现”，其余待用户按稳定编号归类；仅更新文档，现有运行接口没有升级到 V1.2。开发原则见仓库内 [Skill](skills/spikive-control-sdk/SKILL.md)。
+**V1.2 逐项核对**：[第 3 章评审与三类整理](docs/ROS接口规范V1.2_第3章评审.md)。已按用户决定填写三类，剩余项目可继续按稳定编号归类；仅更新文档，现有运行接口没有升级到 V1.2。开发原则见仓库内 [Skill](skills/spikive-control-sdk/SKILL.md)。
 
 现已增加 PCD 地图加载、初始位姿重定位和匹配结果适配，详见 [定位与点云加载 README](docs/README_定位与点云加载.md)（含最简命令、PDF 对照和流程图）。
 
