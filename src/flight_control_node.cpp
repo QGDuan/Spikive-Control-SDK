@@ -1,6 +1,8 @@
 #include <spikive_control_sdk/config.h>
 #include <spikive_control_sdk/control_sdk.h>
-#include <spikive_control_sdk/localization_sdk.h>
+#include <spikive_control_sdk/action_support.h>
+#include <spikive_control_sdk/EmergencyCmd.h>
+#include <spikive_control_sdk/FlightState.h>
 #include <spikive_control_sdk/gotoAction.h>
 #include <spikive_control_sdk/landAction.h>
 #include <spikive_control_sdk/return_homeAction.h>
@@ -22,37 +24,11 @@ namespace spikive_control_sdk
 {
 namespace
 {
-enum ErrorCode : std::uint8_t
-{
-  OK = 0,
-  ERR_CANCELLED = 3,
-  ERR_POSE_INVALID = 4,
-  ERR_NOT_TAKEOFF = 6,
-  ERR_ALREADY_FLYING = 7,
-  ERR_PRECHECK_FAILED = 12,
-  ERR_PARAM_INVALID = 19,
-  ERR_NOT_SUPPORTED = 20,
-  ERR_BUSY = 21
-};
-
 enum class Task { NONE, TAKEOFF, LAND, GOTO, RETURN_HOME };
-enum TakeoffPhase : std::uint8_t { PRECHECK = 1, CLIMBING = 2, DONE = 4 };
-// 现有状态没有独立的触地检测阶段，保留 Action 定义但不生成 phase=2。
-enum LandPhase : std::uint8_t { DESCENDING = 1, TOUCHDOWN = 3, DISARMED = 4 };
-// 后端没有独立避障状态，不生成 AVOIDING=2。
-enum GotoState : std::uint8_t { NAVIGATING = 1, HOLDING = 3, GOTO_DONE = 4 };
-// SDK 补充阶段；没有独立稳定信号，不增加阶段 3。
-enum ReturnPhase : std::uint8_t { RETURN_PRECHECK = 1, RETURNING = 2, RETURN_DONE = 4 };
-
-template<class Result>
-Result makeResult(bool success, ErrorCode code, const std::string& message)
-{
-  Result result;
-  result.success = success;
-  result.error_code = code;
-  result.message = message;
-  return result;
-}
+enum TakeoffPhase : std::uint8_t { PRECHECK = 1, CLIMBING = 2, DONE = 3 };
+enum LandPhase : std::uint8_t { DESCENDING = 1, TOUCHDOWN = 2, DISARMED = 3 };
+enum GotoState : std::uint8_t { NAVIGATING = 1, HOLDING = 2, GOTO_DONE = 3 };
+enum ReturnPhase : std::uint8_t { RETURNING = 1, RETURN_DONE = 2 };
 }  // namespace
 
 // Action 适配器：检查请求 → 转发一次命令 → 监视状态并回传结果。
@@ -100,11 +76,16 @@ public:
     // 使用单次定时器避免阻塞状态/取消回调；这不是任务超时。
     goto_dispatch_timer_ = nh.createWallTimer(ros::WallDuration(0.2),
                                              &FlightControlNode::dispatchGoto, this, true, false);
+    emergency_service_ = nh.advertiseService(config.emergency_service, &FlightControlNode::onEmergency, this);
+    flight_state_pub_ = nh.advertise<FlightState>(config.flight_state_topic, 10);
+    flight_state_timer_ = nh.createWallTimer(ros::WallDuration(0.5), &FlightControlNode::publishFlightState, this);
+    deadline_timer_ = nh.createWallTimer(ros::WallDuration(0.05),
+      [this](const ros::WallTimerEvent&) { expireTask(); });
     takeoff_server_.start();
     land_server_.start();
     goto_server_.start();
     return_server_.start();
-    ROS_INFO("Flight actions ready for drone %d: %s, %s, %s, %s; speed and timeout remain reserved",
+    ROS_INFO("Flight actions ready for drone %d: %s, %s, %s, %s; V1.4 deadlines enabled",
              config.drone_id, config.takeoff_action.c_str(), config.land_action.c_str(),
              config.goto_action.c_str(), config.return_home_action.c_str());
   }
@@ -127,14 +108,6 @@ private:
     return state.connected && state.header.stamp > stamp && !state.armed;
   }
 
-  landResult makeLandResult(bool success, ErrorCode code, const std::string& message,
-                            const ros::Time& stamp) const
-  {
-    auto result = makeResult<landResult>(success, code, message);
-    result.disarmed = disarmedAfter(stamp);
-    return result;
-  }
-
   void rejectTakeoff(TakeoffGoal goal, ErrorCode code, const std::string& message)
   {
     goal.setRejected(makeResult<takeoffResult>(false, code, message), message);
@@ -143,14 +116,13 @@ private:
 
   void rejectLand(LandGoal goal, ErrorCode code, const std::string& message)
   {
-    goal.setRejected(makeLandResult(false, code, message, ros::Time(0)), message);
+    goal.setRejected(makeResult<landResult>(false, code, message), message);
     ROS_WARN_STREAM("Land rejected: " << message);
   }
 
   void rejectGoto(GotoGoal goal, ErrorCode code, const std::string& message)
   {
     auto result = makeResult<gotoResult>(false, code, message);
-    result.final_distance = std::numeric_limits<float>::quiet_NaN();
     goal.setRejected(result, message);
     ROS_WARN_STREAM("Goto rejected: " << message);
   }
@@ -164,9 +136,16 @@ private:
   void onTakeoff(TakeoffGoal goal)
   {
     const auto request = goal.getGoal();
-    ROS_INFO("Takeoff request: target_altitude=%g climb_speed=%g timeout=%g; all three fields "
-             "are reserved and ignored, px4ctrl retains its configured height and speed",
-             request->target_altitude, request->climb_speed, request->timeout);
+    if (!std::isfinite(request->target_altitude) || request->target_altitude < 0 || !TaskDeadline::valid(request->timeout))
+    {
+      rejectTakeoff(goal, ERR_PARAM_INVALID, "Height/timeout must be finite and nonnegative");
+      return;
+    }
+    if (request->target_altitude != 0)
+    {
+      rejectTakeoff(goal, ERR_NOT_SUPPORTED, "Backend has no per-request altitude input; use target_altitude=0 for native configured height");
+      return;
+    }
     if (active_task_ != Task::NONE)
     {
       rejectTakeoff(goal, ERR_BUSY, "A flight action is already active");
@@ -195,8 +174,9 @@ private:
     origin_z_ = sdk_.altitudeZ();
     takeoff_feedback_ = takeoffFeedback();
     takeoff_feedback_.phase = PRECHECK;
-    takeoff_goal_.setAccepted("Tracking existing px4ctrl takeoff; request parameters are reserved");
+    takeoff_goal_.setAccepted("Tracking native px4ctrl takeoff at backend configured height");
     command_stamp_ = sdk_.takeoff();
+    deadline_.start(request->timeout);
     active_task_ = Task::TAKEOFF;
     publishFeedback();
     ROS_INFO("Published cmd=1; waiting for a newer DroneState.tookoff=true");
@@ -205,8 +185,11 @@ private:
   void onLand(LandGoal goal)
   {
     const auto request = goal.getGoal();
-    ROS_INFO("Land request: descend_speed=%g timeout=%g; both fields are reserved and ignored, "
-             "px4ctrl retains its configured landing_speed", request->descend_speed, request->timeout);
+    if (!TaskDeadline::valid(request->timeout))
+    {
+      rejectLand(goal, ERR_PARAM_INVALID, "timeout must be finite and nonnegative");
+      return;
+    }
     if (active_task_ != Task::NONE)
     {
       rejectLand(goal, ERR_BUSY, "A flight action is already active");
@@ -227,8 +210,9 @@ private:
     land_goal_ = goal;
     land_feedback_ = landFeedback();
     land_feedback_.phase = DESCENDING;
-    land_goal_.setAccepted("Tracking existing px4ctrl landing; request parameters are reserved");
+    land_goal_.setAccepted("Tracking native px4ctrl landing");
     command_stamp_ = sdk_.land();
+    deadline_.start(request->timeout);
     active_task_ = Task::LAND;
     publishFeedback();
     ROS_INFO("Published cmd=2; waiting for newer DroneState.landed and MAVROS ON_GROUND");
@@ -236,8 +220,17 @@ private:
 
   void onReturn(ReturnGoal goal)
   {
-    ROS_INFO("Return request: timeout=%g is reserved and ignored; FlightManager retains its home position, "
-             "planner retains its speed; no automatic landing", goal.getGoal()->timeout);
+    const auto request = goal.getGoal();
+    if (!std::isfinite(request->speed) || !TaskDeadline::valid(request->timeout))
+    {
+      rejectReturn(goal, ERR_PARAM_INVALID, "speed and timeout must be finite; timeout must be nonnegative");
+      return;
+    }
+    if (request->speed > 0)
+    {
+      rejectReturn(goal, ERR_NOT_SUPPORTED, "Backend has no per-request return speed; use speed<=0");
+      return;
+    }
     if (active_task_ != Task::NONE)
     {
       rejectReturn(goal, ERR_BUSY, "A flight action is already active");
@@ -264,9 +257,12 @@ private:
     return_goal_ = goal;
     return_pending_stamp_ = ros::Time();
     return_feedback_ = return_homeFeedback();
-    return_feedback_.phase = RETURN_PRECHECK;
-    return_goal_.setAccepted("Tracking existing return; home and speed remain backend-defined, timeout is reserved");
+    return_feedback_.phase = RETURNING;
+    return_feedback_.distance_to_home = std::numeric_limits<float>::quiet_NaN();
+    return_goal_sequence_ = sdk_.goalSequence();
+    return_goal_.setAccepted("Tracking native return; home and speed remain backend-defined");
     command_stamp_ = sdk_.returnHome();
+    deadline_.start(request->timeout);
     active_task_ = Task::RETURN_HOME;
     publishFeedback();
     ROS_INFO("Published cmd=3; waiting for post-command returned=false then a newer returned=true; no automatic landing");
@@ -281,14 +277,23 @@ private:
       return;
     }
     for (float value : {request->position[0], request->position[1], request->position[2],
-                        request->speed, request->arrival_total_dist, request->arrival_horiz_dist,
-                        request->stable_time, request->timeout})
+                        request->speed, request->yaw, request->timeout})
     {
       if (!std::isfinite(value))
       {
         rejectGoto(goal, ERR_PARAM_INVALID, "Goto fields must be finite");
         return;
       }
+    }
+    if (!TaskDeadline::valid(request->timeout))
+    {
+      rejectGoto(goal, ERR_PARAM_INVALID, "timeout must be nonnegative");
+      return;
+    }
+    if (request->speed > 0 || request->yaw_enable)
+    {
+      rejectGoto(goal, ERR_NOT_SUPPORTED, "GoalSet supports xyz only; use speed<=0 and yaw_enable=false");
+      return;
     }
     if (!ready() || !sdk_.hasGoalSubscriber())
     {
@@ -316,21 +321,22 @@ private:
     }
     goto_goal_ = goal;
     goto_target_ = target;
-    arrival_total_dist_ = request->arrival_total_dist > 0 ? request->arrival_total_dist : config_.arrival_total_dist;
-    arrival_horiz_dist_ = request->arrival_horiz_dist > 0 ? request->arrival_horiz_dist : config_.arrival_horiz_dist;
-    stable_time_ = request->stable_time > 0 ? request->stable_time : config_.stable_time;
+    arrival_total_dist_ = config_.arrival_total_dist;
+    arrival_horiz_dist_ = config_.arrival_horiz_dist;
+    stable_time_ = config_.stable_time;
     goto_sent_ = false;
     stable_since_ = ros::Time();
     last_observation_ = ros::Time();
     goto_feedback_ = gotoFeedback();
     goto_feedback_.state = NAVIGATING;
     ROS_INFO("Goto native xyz=(%g,%g,%g), total<=%g m, horizontal<=%g m, stable=%g s; "
-             "speed=%g and timeout=%g are reserved and ignored",
+             "native speed=%g; tracking timeout=%g",
              target[0], target[1], target[2], arrival_total_dist_, arrival_horiz_dist_, stable_time_,
              request->speed, request->timeout);
-    goto_goal_.setAccepted("Tracking existing planner goto; speed and timeout are reserved");
+    goto_goal_.setAccepted("Tracking native planner goto");
+    deadline_.start(request->timeout);
     active_task_ = Task::GOTO;
-    sdk_.resume();
+    command_stamp_ = sdk_.resume();
     goto_dispatch_timer_.stop();
     goto_dispatch_timer_.setPeriod(ros::WallDuration(0.2));
     goto_dispatch_timer_.start();
@@ -339,14 +345,14 @@ private:
 
   void dispatchGoto(const ros::WallTimerEvent&)
   {
-    if (active_task_ != Task::GOTO || goto_sent_)
+    if (expireTask() || active_task_ != Task::GOTO || goto_sent_)
     {
       return;
     }
     if (!ready() || !sdk_.hasGoalSubscriber() || !sdk_.hasNavigationOdometry() ||
         sdk_.extendedState().landed_state != mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR)
     {
-      goto_goal_.setAborted(makeGotoResult(false, ERR_PRECHECK_FAILED,
+      goto_goal_.setAborted(makeResult<gotoResult>(false, ERR_PRECHECK_FAILED,
                                           "Goto conditions changed before goal dispatch; Continue was already forwarded"));
       active_task_ = Task::NONE;
       return;
@@ -358,6 +364,15 @@ private:
 
   void onStateUpdate()
   {
+    if (expireTask()) return;
+    const auto& command = sdk_.observedCommand();
+    const unsigned expected = active_task_ == Task::TAKEOFF ? 1 : active_task_ == Task::LAND ? 2 :
+                              active_task_ == Task::RETURN_HOME ? 3 : active_task_ == Task::GOTO ? 4 : 0;
+    if (expected && command.header.stamp > command_stamp_ && command.cmd != expected)
+    {
+      abortActive(ERR_CANCELLED, "Tracking ended after an external control command");
+      return;
+    }
     if (active_task_ == Task::TAKEOFF)
     {
       updateTakeoff();
@@ -386,7 +401,6 @@ private:
     if (state.tookoff)
     {
       takeoff_feedback_.phase = DONE;
-      takeoff_feedback_.progress = 1.0f;
       publishFeedback();
       takeoff_goal_.setSucceeded(makeResult<takeoffResult>(true, OK, "Controller reports takeoff complete"));
       active_task_ = Task::NONE;
@@ -414,12 +428,12 @@ private:
     if (state.header.stamp > command_stamp_ && state.landed &&
         extended.landed_state == mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND)
     {
-      auto result = makeLandResult(true, OK, "Controller and MAVROS confirm touchdown", command_stamp_);
-      land_feedback_.phase = result.disarmed ? DISARMED : TOUCHDOWN;
+      auto result = makeResult<landResult>(true, OK, "Controller and MAVROS confirm touchdown");
+      land_feedback_.phase = disarmedAfter(command_stamp_) ? DISARMED : TOUCHDOWN;
       publishFeedback();
       land_goal_.setSucceeded(result);
       active_task_ = Task::NONE;
-      ROS_INFO("Land succeeded from confirmed touchdown; disarmed=%s", result.disarmed ? "true" : "false");
+      ROS_INFO("Land succeeded from confirmed touchdown; disarmed=%s", land_feedback_.phase == DISARMED ? "true" : "false");
     }
     else if (extended.landed_state == mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR ||
              extended.landed_state == mavros_msgs::ExtendedState::LANDED_STATE_LANDING)
@@ -445,14 +459,14 @@ private:
       return;
     }
     const auto& extended = sdk_.extendedState();
-    if (return_pending_stamp_.isZero() || state.header.stamp <= return_pending_stamp_ ||
+    if (sdk_.goalSequence() <= return_goal_sequence_ || return_pending_stamp_.isZero() || state.header.stamp <= return_pending_stamp_ ||
         !sdk_.connected() || state.landed || extended.header.stamp <= command_stamp_ ||
         extended.landed_state != mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR)
     {
       return;
     }
     return_feedback_.phase = RETURN_DONE;
-    return_feedback_.progress = 1.0f;
+    refreshReturnFeedback();
     publishFeedback();
     return_goal_.setSucceeded(makeResult<return_homeResult>(true, OK,
       "Controller reports return complete; no landing command was sent"));
@@ -479,14 +493,6 @@ private:
     goto_feedback_.current_speed = sdk_.hasOdometry() &&
       std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z)
       ? static_cast<float>(std::hypot(std::hypot(v.x, v.y), v.z)) : unknown;
-  }
-
-  gotoResult makeGotoResult(bool success, ErrorCode code, const std::string& message)
-  {
-    refreshGotoFeedback();
-    auto result = makeResult<gotoResult>(success, code, message);
-    result.final_distance = goto_feedback_.distance_total;
-    return result;
   }
 
   void updateGoto()
@@ -523,7 +529,7 @@ private:
     {
       goto_feedback_.state = GOTO_DONE;
       publishFeedback();
-      goto_goal_.setSucceeded(makeGotoResult(true, OK, "Controller reached and goto arrival conditions remained satisfied"));
+      goto_goal_.setSucceeded(makeResult<gotoResult>(true, OK, "Controller reached and goto arrival conditions remained satisfied"));
       active_task_ = Task::NONE;
       ROS_INFO("Goto succeeded; final_distance=%g m", goto_feedback_.distance_total);
     }
@@ -545,7 +551,7 @@ private:
     if (active_task_ == Task::LAND && goal == land_goal_)
     {
       const std::string message = "Land tracking cancelled; aircraft control is unchanged";
-      land_goal_.setCanceled(makeLandResult(false, ERR_CANCELLED, message, command_stamp_), message);
+      land_goal_.setCanceled(makeResult<landResult>(false, ERR_CANCELLED, message), message);
       active_task_ = Task::NONE;
       ROS_INFO_STREAM(message);
     }
@@ -557,7 +563,7 @@ private:
     {
       goto_dispatch_timer_.stop();
       const std::string message = "Goto tracking cancelled; previously forwarded aircraft commands are unchanged";
-      goto_goal_.setCanceled(makeGotoResult(false, ERR_CANCELLED, message), message);
+      goto_goal_.setCanceled(makeResult<gotoResult>(false, ERR_CANCELLED, message), message);
       active_task_ = Task::NONE;
       ROS_INFO_STREAM(message);
     }
@@ -596,12 +602,103 @@ private:
     }
     else if (active_task_ == Task::RETURN_HOME)
     {
+      refreshReturnFeedback();
       return_goal_.publishFeedback(return_feedback_);
     }
   }
 
-  void onTimer(const ros::WallTimerEvent&) { publishFeedback(); }
+  void onTimer(const ros::WallTimerEvent&) { if (!expireTask()) publishFeedback(); }
 
+  void refreshReturnFeedback()
+  {
+    return_feedback_.distance_to_home = std::numeric_limits<float>::quiet_NaN();
+    // 只使用本次返航之后观察到的目标；没有请求 ID，不能当严格目标 ACK。
+    if (sdk_.goalSequence() <= return_goal_sequence_ || !sdk_.hasNavigationOdometry()) return;
+    const auto& p = sdk_.navigationOdometry().pose.pose.position;
+    const auto& home = sdk_.observedGoal().goal;
+    return_feedback_.distance_to_home = std::hypot(std::hypot(home[0] - p.x, home[1] - p.y), home[2] - p.z);
+  }
+
+  void abortActive(ErrorCode code, const std::string& reason)
+  {
+    goto_dispatch_timer_.stop();
+    switch (active_task_)
+    {
+      case Task::TAKEOFF: takeoff_goal_.setAborted(makeResult<takeoffResult>(false, code, reason)); break;
+      case Task::LAND: land_goal_.setAborted(makeResult<landResult>(false, code, reason)); break;
+      case Task::GOTO: goto_goal_.setAborted(makeResult<gotoResult>(false, code, reason)); break;
+      case Task::RETURN_HOME: return_goal_.setAborted(makeResult<return_homeResult>(false, code, reason)); break;
+      case Task::NONE: break;
+    }
+    active_task_ = Task::NONE;
+  }
+
+  bool expireTask()
+  {
+    if (active_task_ == Task::NONE || !deadline_.expired()) return false;
+    abortActive(ERR_TIMEOUT, "Tracking deadline exceeded; forwarded aircraft commands remain unchanged");
+    return true;
+  }
+
+  bool onEmergency(EmergencyCmd::Request& req, EmergencyCmd::Response& res)
+  {
+    if (req.cmd < 1 || req.cmd > 3)
+      res = makeResult<EmergencyCmd::Response>(false, ERR_PARAM_INVALID, "cmd must be 1, 2 or 3");
+    else if (!ready() || !sdk_.hasNavigationOdometry() ||
+             sdk_.extendedState().landed_state != mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR)
+      res = makeResult<EmergencyCmd::Response>(false, ERR_PRECHECK_FAILED, "Require connected airborne backend and valid navigation pose");
+    else if (!sdk_.hasTrajectory() || sdk_.goalSequence() == 0 || (req.cmd == 3 && !sdk_.hasGoalSubscriber()))
+      res = makeResult<EmergencyCmd::Response>(false, ERR_NOT_SUPPORTED, "Native position hold/resume requires an observed goal and planner trajectory");
+    else
+    {
+      abortActive(ERR_CANCELLED, "Tracking superseded by explicit emergency service command");
+      if (req.cmd == 3) sdk_.resume(); else sdk_.hold();
+      res = makeResult<EmergencyCmd::Response>(true, OK,
+        req.cmd == 3 ? "cmd=4 forwarded; Continue at current position, not previous route" :
+                       "cmd=5 forwarded; native position hold, no motor stop; no execution ACK");
+    }
+    return true;
+  }
+
+  void publishFlightState(const ros::WallTimerEvent&)
+  {
+    if (!sdk_.hasDroneState() || !sdk_.connected() || !sdk_.hasExtendedState() ||
+        sdk_.droneState().header.stamp.isZero() || sdk_.extendedState().header.stamp.isZero()) return;
+    const auto& state = sdk_.droneState();
+    const auto landed = sdk_.extendedState().landed_state;
+    const auto command = sdk_.observedCommand().cmd;
+    FlightState out;
+    out.header.stamp = std::min(state.header.stamp, sdk_.extendedState().header.stamp);
+    // 原枚举没有 UNKNOWN。无充分依据时停止发布，不伪造 IDLE/AVOIDING。
+    if (active_task_ == Task::TAKEOFF && takeoff_feedback_.phase == PRECHECK) out.state = 1;
+    else if (landed == mavros_msgs::ExtendedState::LANDED_STATE_TAKEOFF) out.state = 2;
+    else if (landed == mavros_msgs::ExtendedState::LANDED_STATE_LANDING) out.state = 7;
+    else if (landed == mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND)
+      out.state = was_airborne_ || command == 2 ? 8 : 0;
+    else if (landed == mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR)
+    {
+      was_airborne_ = true;
+      if (command == 2 || active_task_ == Task::LAND) out.state = 7;
+      else if (active_task_ == Task::GOTO) out.state = goto_feedback_.state == HOLDING ? 3 : 4;
+      else if (active_task_ == Task::RETURN_HOME) out.state = 6;
+      else if (active_task_ == Task::TAKEOFF) out.state = 2;
+      else if (state.returned || state.reached || state.tookoff) out.state = 3;
+      else if (command == 5 && sdk_.hasTrajectory() && sdk_.goalSequence()) out.state = 3;
+      else if (command == 3 || active_task_ == Task::RETURN_HOME) out.state = 6;
+      else if (active_task_ == Task::TAKEOFF || command == 1) out.state = 2;
+      else if (sdk_.goalSequence() && sdk_.hasTrajectory()) out.state = 4;
+      else return;
+    }
+    else return;
+    flight_state_pub_.publish(out);
+  }
+
+  TaskDeadline deadline_;
+  ros::ServiceServer emergency_service_;
+  ros::Publisher flight_state_pub_;
+  ros::WallTimer flight_state_timer_, deadline_timer_;
+  std::uint64_t return_goal_sequence_{0};
+  bool was_airborne_{false};
   Config config_;
   ControlSdk sdk_;
   TakeoffServer takeoff_server_;
@@ -634,14 +731,13 @@ private:
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "spikive_control_sdk_node");
+  ros::init(argc, argv, "spikive_flight_node");
   ros::NodeHandle nh;
   ros::NodeHandle private_nh("~");
   try
   {
     const auto config = spikive_control_sdk::Config::load(private_nh);
     spikive_control_sdk::FlightControlNode node(nh, config);
-    spikive_control_sdk::LocalizationSdk localization(nh, config);
     ros::spin();
   }
   catch (const std::exception& error)

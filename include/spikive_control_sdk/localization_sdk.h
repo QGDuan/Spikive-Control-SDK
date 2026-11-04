@@ -6,8 +6,8 @@
 
 namespace spikive_control_sdk
 {
-// 同一 SDK 节点内的定位适配器。匹配计算仍在 Spikive-SLAM global_match 中。
-// 普通回调沿用单线程；仅 LoadMap Service 用独立队列，避免读文件/等待确认阻塞飞行 Action。
+// 独立定位节点中的适配器。匹配计算仍在 Spikive-SLAM global_match 中。
+// 普通回调沿用单线程；仅 LoadMap Service 用独立队列，避免读文件/等待确认阻塞定位状态回调。
 class LocalizationSdk
 {
 public:

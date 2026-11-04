@@ -35,6 +35,27 @@ ControlSdk::ControlSdk(ros::NodeHandle& nh, const Config& config)
   odometry_sub_ = nh.subscribe(config.odometry_topic, 10, &ControlSdk::odometryCallback, this);
   navigation_odometry_sub_ = nh.subscribe(config.navigation_odometry_topic, 10,
                                          &ControlSdk::navigationOdometryCallback, this);
+  command_observer_ = nh.subscribe<controller_msgs::cmd>(config.control_topic, 10,
+    [this](const controller_msgs::cmd::ConstPtr& msg)
+    {
+      observed_command_ = *msg;
+      notifyUpdate();
+    });
+  goal_observer_ = nh.subscribe<quadrotor_msgs::GoalSet>(config.goal_topic, 10,
+    [this](const quadrotor_msgs::GoalSet::ConstPtr& msg)
+    {
+      if (msg->drone_id != drone_id_ || msg->goal[2] < -0.1) return;
+      for (float v : msg->goal) if (!std::isfinite(v)) return;
+      observed_goal_ = *msg;
+      ++goal_sequence_;
+      notifyUpdate();
+    });
+  trajectory_sub_ = nh.subscribe<quadrotor_msgs::PositionCommand>(config.trajectory_topic, 10,
+    [this](const quadrotor_msgs::PositionCommand::ConstPtr& msg)
+    {
+      have_trajectory_ = std::isfinite(msg->position.x) && std::isfinite(msg->position.y) &&
+                         std::isfinite(msg->position.z);
+    });
 }
 
 void ControlSdk::setStateCallback(StateCallback callback)
@@ -60,6 +81,11 @@ ros::Time ControlSdk::returnHome()
 ros::Time ControlSdk::resume()
 {
   return sendCommand(4);
+}
+
+ros::Time ControlSdk::hold()
+{
+  return sendCommand(5);
 }
 
 ros::Time ControlSdk::goTo(float x, float y, float z)

@@ -16,6 +16,7 @@ Config Config::forDrone(int drone_id)
   config.drone_id = drone_id;
   config.drone_state_topic = "/drone_" + std::to_string(drone_id) + "_state";
   const auto prefix = "/drone_" + std::to_string(drone_id);
+  config.trajectory_topic = prefix + "_planning/pos_cmd";
   config.navigation_odometry_topic = prefix + "_visual_slam/odom";
   config.localization_map_topic = prefix + "_localization_pcl";
   config.initial_pose_topic = prefix + "_initialpose";
@@ -55,6 +56,9 @@ Config Config::load(const ros::NodeHandle& private_nh)
     private_nh.param(key, value, value);
     if (value.empty()) value = fallback;
   };
+  load_topic("topics/trajectory", config.trajectory_topic, defaults.trajectory_topic);
+  private_nh.param("services/emergency", config.emergency_service, config.emergency_service);
+  private_nh.param("topics/flight_state", config.flight_state_topic, config.flight_state_topic);
   load_topic("localization/map_topic", config.localization_map_topic, defaults.localization_map_topic);
   load_topic("topics/navigation_odometry", config.navigation_odometry_topic, defaults.navigation_odometry_topic);
   load_topic("localization/initial_pose_topic", config.initial_pose_topic, defaults.initial_pose_topic);
@@ -86,6 +90,7 @@ void Config::validate() const
   for (const auto* name : {&control_topic, &goal_topic, &drone_state_topic, &mavros_state_topic,
                            &extended_state_topic, &odometry_topic, &navigation_odometry_topic, &altitude_topic,
                            &takeoff_action, &land_action, &goto_action, &return_home_action,
+                           &trajectory_topic, &emergency_service, &flight_state_topic,
                            &load_map_service, &relocalize_action,
                            &localization_status_topic, &localization_map_topic, &initial_pose_topic,
                            &match_status_topic, &match_transform_topic, &map_echo_topic})

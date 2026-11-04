@@ -1,14 +1,10 @@
-# goal
-float32 target_altitude       # 目标高度 m，相对起飞点地面
-float32 climb_speed           # 爬升速度 m/s，<=0 使用默认
-float32 timeout               # 超时 s
+# V1.4; target_altitude=0 keeps the native backend height (SDK compatibility mode).
+float32 target_altitude
+float32 timeout
 ---
-# result
 bool success
 uint8 error_code
 string message
 ---
-# feedback
-uint8 phase                  # 1 PRECHECK 2 CLIMBING 3 STABILIZING 4 DONE
+uint8 phase  # 1 PRECHECK 2 CLIMBING 3 DONE
 float32 current_altitude
-float32 progress             # 0.0~1.0

@@ -1,5 +1,7 @@
 # 0.6.0：按 SLAM / WayPoint 对齐坐标接口
 
+> 本文为 0.6.0 / V1.2 历史记录；当前接口、节点和验证见 [V1.4 说明](README_V1.4_实现与验证.md)。
+
 本版只修改 Control SDK。地图和初值遵循项目原生 `world`，Goto 位置使用 Planner 同源里程计；不修改 SLAM、WayPoint、Planner、px4ctrl 或 MAVROS，不做坐标旋转、平移或 TF 广播。
 
 ## 1. 坐标与数据来源

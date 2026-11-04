@@ -1,18 +1,18 @@
 # 点云加载与初始位姿重定位
 
-SDK 负责 PCD 校验、转发初值、监视匹配和返回结果；起飞前的一次地图匹配由原有 Spikive-SLAM 执行。成功后停止地图 ICP，飞行期间 LIO 继续输出位姿，fusion_repub 使用已确认的固定变换。SDK 不自动重触发匹配。全部新增实现位于 Control SDK，保持原来的一个节点，不修改或复制 SLAM、Planner、Manager、WayPoint 的实现。
+SDK 负责 PCD 校验、转发初值、监视匹配和返回结果；起飞前的一次地图匹配由原有 Spikive-SLAM 执行。成功后停止地图 ICP，飞行期间 LIO 继续输出位姿，fusion_repub 使用已确认的固定变换。SDK 不自动重触发匹配。V1.4 中由独立 `spikive_localization_node` 提供，飞行、采集和数据映射在各自节点运行；定位算法仍由原 SLAM 执行。
 
-参考 [Spikive-SLAM main 的固定版本 c86c818](https://github.com/QGDuan/Spikive-SLAM/tree/c86c818166352ac3da7c883dad959be10b65af43)，接口来自 [global_match.cpp](https://github.com/QGDuan/Spikive-SLAM/blob/c86c818166352ac3da7c883dad959be10b65af43/src/localization/global_match.cpp)、[localization.launch](https://github.com/QGDuan/Spikive-SLAM/blob/c86c818166352ac3da7c883dad959be10b65af43/launch/localization.launch) 和 [fusion_repub.cpp](https://github.com/QGDuan/Spikive-SLAM/blob/c86c818166352ac3da7c883dad959be10b65af43/src/localization/fusion_repub.cpp)。本次参考代码下载至 `/tmp/spikive-slam-reference.k7whGh`，仅供阅读，不作为编译依赖。
+参考 [Spikive-SLAM main 的固定版本 c86c818](https://github.com/QGDuan/Spikive-SLAM/tree/c86c818166352ac3da7c883dad959be10b65af43)，接口来自 [global_match.cpp](https://github.com/QGDuan/Spikive-SLAM/blob/c86c818166352ac3da7c883dad959be10b65af43/src/localization/global_match.cpp)、[localization.launch](https://github.com/QGDuan/Spikive-SLAM/blob/c86c818166352ac3da7c883dad959be10b65af43/launch/localization.launch) 和 [fusion_repub.cpp](https://github.com/QGDuan/Spikive-SLAM/blob/c86c818166352ac3da7c883dad959be10b65af43/src/localization/fusion_repub.cpp)。SLAM 源码仅作协议参考，不作为 SDK 编译依赖。
 
 ## 1. PDF 与 SDK 定义
 
-| 接口 | PDF V1.1 内容 | 本次实现 |
+| 接口 | V1.4 定义 | 当前实现 |
 | --- | --- | --- |
-| `/nav/localization/load_map` | §3.1.4 完整定义 LoadMap.srv | [LoadMap.srv](../srv/LoadMap.srv) 保留 2 个请求、3 个响应字段的名称、类型与顺序 |
-| `/nav/localization/relocalize` | 仅规定 Action 名称，没有字段 | [relocalize.action](../action/relocalize.action) 为 SDK 补充定义，发送初始位姿，返回成功、fitness、阈值、尝试次数和匹配变换 |
-| `/nav/status/localization` | 仅规定 Topic 名称、10 Hz，没有字段 | [LocalizationStatus.msg](../msg/LocalizationStatus.msg) 为 SDK 补充定义，报告地图、匹配和跟踪状态 |
+| `/nav/localization/load_map` | §3.2.1 定义 LoadMap.srv | [LoadMap.srv](../srv/LoadMap.srv) 保留 2 个请求、3 个响应字段的名称、类型与顺序 |
+| `/nav/localization/relocalize` | §3.2.2 完整定义 | [relocalize.action](../action/relocalize.action) 与 V1.4 字段一致，发送初始位姿，返回成功、fitness、阈值、尝试次数和匹配变换 |
+| `/nav/status/localization` | SDK 保留扩展 | [LocalizationStatus.msg](../msg/LocalizationStatus.msg) 为 SDK 补充定义，报告地图、匹配和跟踪状态 |
 
-没有宣称后两项字段来自 PDF。初始位姿由 Relocalize Goal 给入，不额外增加一个初值 Service。未扩展 PDF 清单中的 reset、配置服务、全套状态或建图接口。
+LocalizationStatus 为既有 SDK 扩展。初始位姿由 Relocalize Goal 给入，不额外增加一个初值 Service。其他阶段接口见 [V1.4 范围](README_V1.4_实现与验证.md)。
 
 ## 2. 消息对应
 
@@ -161,7 +161,7 @@ rostopic pub -1 /nav/localization/relocalize/cancel actionlib_msgs/GoalID '{}'
 Orin 此前 error=12 的直接原因是 SDK id=1、后端 id=2：请用 `drone_id:=2` 启动 SDK。修改坐标标签不能修复话题编号不一致。旧节点先退出，再启动本版；检查命令每条分别执行：
 
 ```bash
-rosnode info /spikive_control_sdk_node
+rosnode info /spikive_localization_node
 rosnode info /global_match
 rosparam get /use_sim_time
 rosparam get /localization/continuous_match

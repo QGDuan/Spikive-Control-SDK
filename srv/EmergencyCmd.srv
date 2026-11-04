@@ -1,0 +1,5 @@
+uint8 cmd  # 1 HOVER / 2 STOP both position hold; 3 RESUME
+---
+bool success
+uint8 error_code
+string message

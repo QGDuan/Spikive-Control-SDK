@@ -7,13 +7,16 @@
 namespace spikive_control_sdk
 {
 
-// 配置通信、反馈和到达状态判据；不修改飞控高度、速度或超时策略。
+// 配置通信、反馈和 SDK 到达监视；不修改飞控控制参数。
 struct Config
 {
   int drone_id{1};
   double feedback_rate{10.0};
   std::string control_topic{"/control"};
   std::string goal_topic{"/goal_with_id"};
+  std::string trajectory_topic{"/drone_1_planning/pos_cmd"};
+  std::string emergency_service{"/nav/safety/emergency"};
+  std::string flight_state_topic{"/nav/status/flight_state"};
   std::string drone_state_topic{"/drone_1_state"};
   std::string mavros_state_topic{"/mavros/state"};
   std::string extended_state_topic{"/mavros/extended_state"};

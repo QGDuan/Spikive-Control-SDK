@@ -1,9 +1,24 @@
 <launch>
   <arg name="drone_id" default="1"/>
   <arg name="config_file" default="$(find spikive_control_sdk)/config/control_sdk.yaml"/>
-  <node pkg="spikive_control_sdk" type="spikive_control_sdk_node"
-        name="spikive_control_sdk_node" output="screen">
-    <rosparam command="load" file="$(arg config_file)"/>
-    <param name="drone_id" value="$(arg drone_id)" type="int"/>
-  </node>
+  <arg name="enable_flight" default="true"/>
+  <include if="$(arg enable_flight)" file="$(find spikive_control_sdk)/launch/flight.launch">
+    <arg name="drone_id" value="$(arg drone_id)"/>
+    <arg name="config_file" value="$(arg config_file)"/>
+  </include>
+  <arg name="enable_localization" default="true"/>
+  <include if="$(arg enable_localization)" file="$(find spikive_control_sdk)/launch/localization.launch">
+    <arg name="drone_id" value="$(arg drone_id)"/>
+    <arg name="config_file" value="$(arg config_file)"/>
+  </include>
+  <arg name="enable_map_record" default="true"/>
+  <include if="$(arg enable_map_record)" file="$(find spikive_control_sdk)/launch/map_record.launch">
+    <arg name="drone_id" value="$(arg drone_id)"/>
+    <arg name="config_file" value="$(arg config_file)"/>
+  </include>
+  <arg name="enable_data_mapping" default="true"/>
+  <include if="$(arg enable_data_mapping)" file="$(find spikive_control_sdk)/launch/data_mapping.launch">
+    <arg name="drone_id" value="$(arg drone_id)"/>
+    <arg name="config_file" value="$(arg config_file)"/>
+  </include>
 </launch>

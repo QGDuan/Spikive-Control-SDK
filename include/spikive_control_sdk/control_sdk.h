@@ -2,6 +2,9 @@
 
 #include <spikive_control_sdk/config.h>
 #include <controller_msgs/DroneState.h>
+#include <controller_msgs/cmd.h>
+#include <quadrotor_msgs/GoalSet.h>
+#include <quadrotor_msgs/PositionCommand.h>
 #include <mavros_msgs/Altitude.h>
 #include <mavros_msgs/ExtendedState.h>
 #include <mavros_msgs/State.h>
@@ -44,14 +47,20 @@ public:
   const nav_msgs::Odometry& navigationOdometry() const { return navigation_odometry_; }
   double altitudeZ() const { return altitude_z_; }
   float groundClearance() const { return ground_clearance_; }
-  bool hasControlSubscriber() const { return control_pub_.getNumSubscribers() > 0; }
-  bool hasGoalSubscriber() const { return goal_pub_.getNumSubscribers() > 0; }
+  // 本类也观察命令/目标，扣除自身连接；自己的订阅不能证明后端在线。
+  bool hasControlSubscriber() const { return control_pub_.getNumSubscribers() > 1; }
+  bool hasGoalSubscriber() const { return goal_pub_.getNumSubscribers() > 1; }
+  bool hasTrajectory() const { return have_trajectory_; }
+  std::uint64_t goalSequence() const { return goal_sequence_; }
+  const quadrotor_msgs::GoalSet& observedGoal() const { return observed_goal_; }
+  const controller_msgs::cmd& observedCommand() const { return observed_command_; }
 
   // 各发布一次既有命令，返回发送时间戳；不是控制器 ACK。
   ros::Time takeoff();
   ros::Time land();
   ros::Time returnHome();  // cmd=3，返航点由现有 FlightManager 决定。
   ros::Time resume();  // cmd=4，沿用 WayPoint 的 Continue 协议。
+  ros::Time hold();  // cmd=5，沿用已有轨迹分支的位置保持。
   ros::Time goTo(float x, float y, float z);  // 原生局部坐标直接转发给 GoalSet。
 
 private:
@@ -72,6 +81,11 @@ private:
   ros::Subscriber altitude_sub_;
   ros::Subscriber odometry_sub_;
   ros::Subscriber navigation_odometry_sub_;
+  ros::Subscriber command_observer_, goal_observer_, trajectory_sub_;
+  controller_msgs::cmd observed_command_;
+  quadrotor_msgs::GoalSet observed_goal_;
+  std::uint64_t goal_sequence_{0};
+  bool have_trajectory_{false};
   controller_msgs::DroneState drone_state_;
   mavros_msgs::State mavros_state_;
   mavros_msgs::ExtendedState extended_state_;

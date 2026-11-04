@@ -1,0 +1,10 @@
+uint32 cmd  # 1 start recording, 2 stop and save
+string bag_path  # Absolute destination directory, cmd=1.
+string bag_name  # Name without path/extension, cmd=1.
+float32 timeout  # Deadline for this command, not recording duration; 0 disables.
+---
+bool success
+uint8 error_code
+string message
+---
+uint8 state  # 0 IDLE 1 RECORDING 3 COMPLETED 4 FAILED

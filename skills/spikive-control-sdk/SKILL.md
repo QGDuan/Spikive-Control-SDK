@@ -42,22 +42,26 @@ SDK 负责命令转发、状态监视和接口整理。用户要求的范围决�
 
 - 优先已有控制器/Planner 对外状态，缺失信息再补 MAVROS；必要的距离、模长、时间单位转换写明公式。没有发布的 FSM 枚举不能声称直接可取；重规划不等于 AVOIDING，低速不等于已确认 HOLDING。
 - 区分“已转发”“控制器已完成”“已上锁”。发布者/订阅者存在不代表收到命令 ACK；时间戳晚于命令仅排除旧缓存，不证明请求严格对应，也不证明数据新鲜。
-- Takeoff：cmd=1；成功用新的 tookoff 且连接有效。目标高度、速度、timeout 当前预留；实际由后端决定，不增加虚构 STABILIZING。
-- Land：cmd=2；新 landed 加新 MAVROS ON_GROUND 确认着地，连接有效；disarmed 单独依据新的 State.connected 且 !armed。LANDING 不能当触地检测，height 使用有效 bottom_clearance，不混用坐标 z 或前方地形高度。
-- 用户同意 GROUND_DETECT 复用 ON_GROUND 时，说明它是已着地确认，不是独立提前触地信号；与 TOUCHDOWN 可共用证据。当前读取 ON_GROUND 不等于已经输出 phase=2。
-- Goto：Continue cmd=4→0.2 s→原生 GoalSet，延迟不是 ACK；新 reached 配合同源里程计距离及稳定时长。GoalSet 没有逐次速度/yaw 输入，PositionCommand 有 yaw 不代表客户可直接指定目标航向。
-- Return：cmd=3；返航点归 FlightManager，不自动取 SDK 起飞点或重定位初值。false→true 的 returned 仍不是目标 ACK；不自动降落。连续 cmd=3 也不保证重新派发。
+- Takeoff：cmd=1；成功用新的 tookoff 且连接有效。V1.4 的 target_altitude=0 沿用后端高度，非零拒绝 20；timeout 已实现，不增加虚构 STABILIZING。
+- Land：cmd=2；新 landed 加新 MAVROS ON_GROUND 确认着地，连接有效；V1.4 上锁信息在 phase=3 报告，依据新的 State.connected 且 !armed，Result 不再含 disarmed。LANDING 不能当触地检测，height 使用有效 bottom_clearance，不混用坐标 z 或前方地形高度。
+- V1.4 Land 阶段为 1 DESCENDING、2 TOUCHDOWN、3 DISARMED，已删除 GROUND_DETECT；不沿用旧版同编号含义。
+- Goto：Continue cmd=4→0.2 s→原生 GoalSet，延迟不是 ACK；新 reached 配合同源里程计距离及稳定时长。GoalSet 没有逐次速度/yaw 输入，PositionCommand 有 yaw 不代表客户可直接指定目标航向。V1.4 正 speed 或 yaw_enable=true 返回 20；到达阈值和 stable_time 留在 SDK YAML。
+- Return：cmd=3；返航点归 FlightManager，不自动取 SDK 起飞点或重定位初值。false→true 的 returned 仍不是目标 ACK；不自动降落。连续 cmd=3 也不保证重新派发。V1.4 还需观察命令后新 GoalSet，距离用其减导航位置，缺值 NaN；正 speed 返回 20。
 - 四个飞行 Action 共用本节点任务槽，不约束外部发布者。取消仅结束跟踪；Goto 取消可撤销未触发的定时发送，不撤回已发命令，不额外悬停/停桨/降落。
-- 急停、悬停与恢复必须核对现有命令行为和生效分支；保持历史位置不是停桨，Continue 发送当前位置不是恢复旧航线。语义未定时不伪造成功能力。
+- Emergency 的 HOVER/STOP 均转 cmd=5 位置保持，RESUME 转 cmd=4 当前点继续；需已知空中、目标和轨迹分支。success 只确认转发；显式命令终止现有飞行跟踪，不恢复旧航线。
 - LoadMap 成功只表示地图得到确认；Relocalize 成功来自本轮开始证据、后端 localized 和有效新修正。不得用舍入后的 fitness 再否定后端成功；状态/变换缺少共同请求 ID 的限制如实记录。
 - bag 录制、PCD 采集、项目保存、后处理分别核对；文件生成不代表后处理完成。点云限频/降采样属于处理支路，不是仅话题改名，不修改规划或定位输入。
+- Record 对接 save_result 的 schema_version=1 数字 JSON 和 request_id 状态；cmd=1 启动确认后 Action 即成功，cmd=2 等待停止确认及 bag 保存完成。不改 SLAM 保存参数；保留源文件，原子导出且不覆盖目标。取消/超时不自动停止采集，晚到 ACK 不恢复旧 Goal。
+- 飞行/Record 的 timeout 使用单调时钟，有限非负，0 禁用；到期返回 2 并终止跟踪，取消返回 3。Goto 未发送的定时目标同时撤销，不向飞机发送补偿控制。
+- FlightState 以 2 Hz 发布可确定的控制器/MAVROS/命令状态；无 UNKNOWN 枚举时无依据不发，不能伪造 AVOIDING，缓存时间不代表数据新鲜。
+- 数据映射发布端禁用 roscpp 的 Header.seq 自动改写；用序列化消息比较检查完整透传。
 - 控制器 reach_dist 保留既有启动配置，禁止飞行中修改。SDK 距离监视阈值与后端控制阈值分开说明，不把 SDK 参数更新结果解释成控制器值已改变。
 
 ## 实现、校验与交付
 
-- 代码开发保持轻量 Config、消息封装和一个 SDK 节点。不要新增控制算法、MAVROS 上锁/解锁/模式调用或内部控制服务来弥补后端缺口。按实际任务保留已有公开接口。
+- 按功能拆分 flight、localization、map_record、data_mapping 四个独立节点，复用轻量 Config/消息封装；不要重新集中到一个节点。不要新增控制算法、MAVROS 上锁/解锁/模式调用或内部控制服务来弥补后端缺口。按实际任务保留已有公开接口。
 - 核对按 drone_id 生成的话题与部署一致，特别是 SDK 默认 1、既有 Orin 后端曾使用 2；不把历史编号当所有环境的默认值。
-- 当前普通 Action/状态回调单线程，LoadMap 有独立服务队列与锁；新增共享状态先核对线程归属和互斥。
+- 各节点普通回调单线程；LoadMap 有独立服务队列与锁。采集文件导出使用后台线程，只传路径副本和原子取消标志，结果回到 ROS 线程更新 Action。
 - 文档变更检查原文字段覆盖、稳定编号唯一、分类/数量一致、链接有效、依据可追溯和运行文件未变；不为纯文档变更虚报新编译或飞行验证。
 - 修改 C++ 或消息后，在已有 Noetic/MAVROS Docker 临时工作区构建本包及消息依赖，做针对性离线验证；不向现有 ROS master 发送飞行测试命令。编译通过不代表实机验证。
 - 修改 Skill 后运行 skill-creator 的 quick_validate.py，并检查规则是否符合用户当前决定。仓库 `skills/spikive-control-sdk/` 与本机安装副本保持同步，保留无关 UI/权限元数据。

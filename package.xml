@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>spikive_control_sdk</name>
-  <version>0.6.0</version>
-  <description>ROS1 flight actions, map loading and localization adapters for the existing Spikive control and SLAM chain.</description>
+  <version>1.4.0</version>
+  <description>ROS1 Noetic V1.4 modular flight, localization, bag recording and native data adapters.</description>
   <maintainer email="user@example.com">Spikive</maintainer>
   <license>BSD-3-Clause</license>
 
@@ -24,4 +24,7 @@
   <depend>quadrotor_msgs</depend>
   <depend>roscpp</depend>
   <depend>std_msgs</depend>
+  <test_depend>rostest</test_depend>
+  <test_depend>rospy</test_depend>
+  <test_depend>rosbag</test_depend>
 </package>

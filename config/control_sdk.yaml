@@ -1,10 +1,12 @@
 # 无人机编号由 launch 的 drone_id 参数设置，默认 1。
-# 配置 SDK 通信与到达判据；不设置 px4ctrl 的高度、速度和任务超时。
+# 配置 SDK 通信与到达判据；不设置 px4ctrl 高度/速度；任务 timeout 由各 Action Goal 指定。
 feedback_rate: 10.0
 
 topics:
   control: /control
   goal: /goal_with_id
+  trajectory: ""  # /drone_{drone_id}_planning/pos_cmd
+  flight_state: /nav/status/flight_state
   drone_state: ""  # 留空时使用 /drone_{drone_id}_state
   mavros_state: /mavros/state
   extended_state: /mavros/extended_state
@@ -21,7 +23,7 @@ actions:
   goto: /nav/flight/goto
   return_home: /nav/flight/return_home
 
-# Goto 请求中相应值 <=0 时使用以下默认值；不写入 Planner/px4ctrl 参数。
+# V1.4 的到达判据保留在 SDK 配置；不写入 Planner/px4ctrl 参数。
 goto:
   arrival_total_dist: 0.30
   arrival_horiz_dist: 0.25
@@ -39,3 +41,19 @@ localization:
   status_topic: /nav/status/localization
   status_rate: 10.0
   map_ack_timeout: 5.0  # 仅服务确认等待；重定位算法超时沿用 SLAM 后端。
+
+services:
+  emergency: /nav/safety/emergency
+
+# SLAM save_result 已有 JSON 协议；空值按 drone_id 生成。
+record:
+  action: /nav/map/record
+  start_topic: ""
+  stop_topic: ""
+  status_topic: ""
+
+# 只映射 topic，所有消息内容和采样时间原样保留。
+data:
+  pointcloud_source: ""  # /drone_{drone_id}_cloud_registered
+  odometry: /nav/data/odom
+  pointcloud: /nav/data/pointcloud
