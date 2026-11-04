@@ -93,9 +93,14 @@ rostopic pub -1 /nav/flight/goto/cancel actionlib_msgs/GoalID '{}'
 rostopic echo -n 1 /nav/data/odom
 rostopic echo -n 1 /nav/data/pointcloud/header
 rostopic hz /nav/data/pointcloud
+rostopic echo -n 1 /nav/data/visual_pointcloud/header
+rostopic echo -n 1 /nav/data/visual_pointcloud/width
+rostopic hz /nav/data/visual_pointcloud
 ```
 
 源为 `/drone_2_visual_slam/odom`、`/drone_2_cloud_registered`，frame、协方差、点结构和采样时间原样保留。
+
+`visual_pointcloud` 为同源可视化支路，默认保留 10% 点，frame 仍为源 world；RViz 添加 PointCloud2 选择该话题。修改比例或输入见 [数据映射配置](README_数据映射.md)。此时不再同时启动原独立 `visual_pointcloud_node` 向同一话题发布。
 
 先开采集监控：
 

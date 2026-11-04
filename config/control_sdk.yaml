@@ -57,3 +57,11 @@ data:
   pointcloud_source: ""  # /drone_{drone_id}_cloud_registered
   odometry: /nav/data/odom
   pointcloud: /nav/data/pointcloud
+
+# data_mapping 内的可视化支路，沿用 visual_pointcloud_node 抽稀逻辑。
+# 修改后重启节点；保留原始完整点云，抽稀比例不改变帧率或坐标系。
+visual_pointcloud:
+  enabled: true
+  input_topic: ""  # 留空复用 data/pointcloud_source，默认 /drone_{drone_id}_cloud_registered
+  output_topic: /nav/data/visual_pointcloud
+  keep_ratio: 0.1  # (0, 1]；1 原样转发，非空云至少保留 1 点

@@ -20,6 +20,8 @@
 
 附件一阶段没有单列 Land；本轮保留并迁移已有能力。二阶段第 4 项 `/nav/map/post_process` 及三阶段接口未加入。
 
+后续按用户要求，data_mapping 内整合原 `visual_pointcloud_node`：额外发布 `/nav/data/visual_pointcloud`，默认均匀保留 10% 点。原有两个数据接口保持完整透传；配置见 [数据映射说明](README_数据映射.md)。
+
 ## 2. 飞行协议与迁移
 
 ROS 类型仍沿用本包既有小写 `takeoffAction/gotoAction/return_homeAction/landAction`，字段类型、顺序按 V1.4；新增 `RecordAction`、`EmergencyCmd`、`FlightState`。
@@ -93,3 +95,5 @@ catkin_test_results build/test_results
 | 改动范围与文档 | 13 个 SDK 外源码/文件目录校验值不变；文档链接、XML、Skill 格式通过 |
 
 以上使用模拟飞行和定位回报，未验证 Orin/真机飞行或真实 ICP；录制跨文件系统复制分支未做独立运行测试。
+
+同日可视化整合验证：Noetic 编译/安装通过；新增 5 个 C++ 用例、4 组 ROS 场景通过，原 10 组 SDK 集成场景回归通过。覆盖 world/Header 保留、自定义字段、大小端、NaN、行 padding、比例/输入配置、关闭开关、异常布局及非法配置日志；原独立 visual_pointcloud 包和其他 SDK 外目录校验值不变。未进行 Orin 实际点云吞吐测试。

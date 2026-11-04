@@ -55,6 +55,7 @@ SDK 负责命令转发、状态监视和接口整理。用户要求的范围决�
 - 飞行/Record 的 timeout 使用单调时钟，有限非负，0 禁用；到期返回 2 并终止跟踪，取消返回 3。Goto 未发送的定时目标同时撤销，不向飞机发送补偿控制。
 - FlightState 以 2 Hz 发布可确定的控制器/MAVROS/命令状态；无 UNKNOWN 枚举时无依据不发，不能伪造 AVOIDING，缓存时间不代表数据新鲜。
 - 数据映射发布端禁用 roscpp 的 Header.seq 自动改写；用序列化消息比较检查完整透传。
+- data_mapping 已整合 visual_pointcloud_node 的按点序抽稀逻辑；完整点云仍原样映射，可视化独立输出默认保留 10%。配置用 visual_pointcloud 的开关/输入/输出/keep_ratio；复制完整点记录并保留 Header、字段和原生 frame，不新增体素平均或 NaN 过滤，不同时启动原节点向同一输出发布。
 - 控制器 reach_dist 保留既有启动配置，禁止飞行中修改。SDK 距离监视阈值与后端控制阈值分开说明，不把 SDK 参数更新结果解释成控制器值已改变。
 
 ## 实现、校验与交付
