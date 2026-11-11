@@ -45,8 +45,9 @@ SDK 负责命令转发、状态监视和接口整理。用户要求的范围决�
 - Takeoff：cmd=1；成功用新的 tookoff 且连接有效。V1.4 的 target_altitude=0 沿用后端高度，非零拒绝 20；timeout 已实现，不增加虚构 STABILIZING。
 - Land：cmd=2；新 landed 加新 MAVROS ON_GROUND 确认着地，连接有效；V1.4 上锁信息在 phase=3 报告，依据新的 State.connected 且 !armed，Result 不再含 disarmed。LANDING 不能当触地检测，height 使用有效 bottom_clearance，不混用坐标 z 或前方地形高度。
 - V1.4 Land 阶段为 1 DESCENDING、2 TOUCHDOWN、3 DISARMED，已删除 GROUND_DETECT；不沿用旧版同编号含义。
-- Goto：Continue cmd=4→0.2 s→原生 GoalSet，延迟不是 ACK；新 reached 配合同源里程计距离及稳定时长。GoalSet 没有逐次速度/yaw 输入，PositionCommand 有 yaw 不代表客户可直接指定目标航向。V1.4 正 speed 或 yaw_enable=true 返回 20；到达阈值和 stable_time 留在 SDK YAML。
-- Return：cmd=3；返航点归 FlightManager，不自动取 SDK 起飞点或重定位初值。false→true 的 returned 仍不是目标 ACK；不自动降落。连续 cmd=3 也不保证重新派发。V1.4 还需观察命令后新 GoalSet，距离用其减导航位置，缺值 NaN；正 speed 返回 20。
+- Goto：Continue cmd=4→0.2 s→原生 GoalSet，延迟不是 ACK；新 reached 配合同源里程计距离及稳定时长。1.4.1 对接新后端 planning/max_vel、yaw_override；不向 GoalSet 添加字段。yaw 在位置满足到达判据后发一次，要求发送后新 pending→turning→done，期间保持 HOLDING；历史 latched done 不能成功，后端 idle/新目标或再次 pending 结束跟踪。String 无请求 ID，不声称严格任务关联；参数/坐标保持原生，SDK 不自行算转向控制。
+- Goto/Return 的 speed>0 仅转发持续生效的规划速度上限；speed<=0 不发话题、不恢复启动值；完成/取消/超时不回滚速度。缺对应后端接口时拒绝 20，全部准入通过才允许改变速度；发布不是实际速度已达到或规划器执行 ACK。
+- Return：cmd=3；返航点归 FlightManager，不自动取 SDK 起飞点或重定位初值。false→true 的 returned 仍不是目标 ACK；不自动降落。连续 cmd=3 也不保证重新派发。V1.4 还需观察命令后新 GoalSet，距离用其减导航位置，缺值 NaN。
 - 四个飞行 Action 共用本节点任务槽，不约束外部发布者。取消仅结束跟踪；Goto 取消可撤销未触发的定时发送，不撤回已发命令，不额外悬停/停桨/降落。
 - Emergency 的 HOVER/STOP 均转 cmd=5 位置保持，RESUME 转 cmd=4 当前点继续；需已知空中、目标和轨迹分支。success 只确认转发；显式命令终止现有飞行跟踪，不恢复旧航线。
 - LoadMap 成功只表示地图得到确认；Relocalize 成功来自本轮开始证据、后端 localized 和有效新修正。不得用舍入后的 fitness 再否定后端成功；状态/变换缺少共同请求 ID 的限制如实记录。

@@ -15,6 +15,9 @@ struct Config
   std::string control_topic{"/control"};
   std::string goal_topic{"/goal_with_id"};
   std::string trajectory_topic{"/drone_1_planning/pos_cmd"};
+  std::string planning_speed_topic{"/drone_1_planning/max_vel"};
+  std::string yaw_override_topic{"/drone_1_control/yaw_override"};
+  std::string yaw_status_topic{"/drone_1_control/yaw_override/status"};
   std::string emergency_service{"/nav/safety/emergency"};
   std::string flight_state_topic{"/nav/status/flight_state"};
   std::string drone_state_topic{"/drone_1_state"};

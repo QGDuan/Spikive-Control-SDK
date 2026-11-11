@@ -48,13 +48,31 @@ rostopic pub -1 /nav/flight/takeoff/goal spikive_control_sdk/takeoffActionGoal '
 rostopic pub -1 /nav/flight/goto/goal spikive_control_sdk/gotoActionGoal '{goal: {position: [1, 0, 1], speed: 0, yaw: 0, yaw_enable: false, timeout: 30}}'
 ```
 
-目标为原生 world 绝对坐标。speed<=0 用后端速度；正 speed 或 yaw_enable=true 返回 20。
+目标为原生 world 绝对坐标。speed<=0 沿用后端当前规划速度上限。1.4.1 支持新版 Planner 的正 speed 与终点 yaw；缺少对应后端接口才返回 20。
+
+新版后端示例（目标按现场替换）：规划上限 1 m/s，到点后朝原生世界轴 +Y，等待位置和航向均完成：
+
+```bash
+rostopic pub -1 /nav/flight/goto/goal spikive_control_sdk/gotoActionGoal '{goal: {position: [1, 0, 1], speed: 1, yaw: 1.5707963, yaw_enable: true, timeout: 60}}'
+```
+
+分别在监控终端查看：
+
+```bash
+rostopic echo /nav/flight/goto/feedback
+rostopic echo /nav/flight/goto/result
+rostopic echo /drone_2_control/yaw_override/status
+```
+
+到点等待航向期间反馈 state=2；收到本次 pending→turning→done 且位置仍满足判据后才成功。详见 [速度与航向](README_速度与航向.md)。
 
 ```bash
 rostopic pub -1 /nav/flight/return_home/goal spikive_control_sdk/return_homeActionGoal '{goal: {speed: 0, timeout: 30}}'
 ```
 
 返航点来自 FlightManager 配置，返航成功不自动降落。
+
+新版 Planner 可把 Return 的 speed 改为正数，例如 `speed: 0.8`。速度上限持续生效，不在任务完成后自动恢复；后续 speed=0 沿用此值。
 
 ```bash
 rostopic pub -1 /nav/flight/land/goal spikive_control_sdk/landActionGoal '{goal: {timeout: 30}}'

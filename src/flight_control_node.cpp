@@ -29,6 +29,7 @@ enum TakeoffPhase : std::uint8_t { PRECHECK = 1, CLIMBING = 2, DONE = 3 };
 enum LandPhase : std::uint8_t { DESCENDING = 1, TOUCHDOWN = 2, DISARMED = 3 };
 enum GotoState : std::uint8_t { NAVIGATING = 1, HOLDING = 2, GOTO_DONE = 3 };
 enum ReturnPhase : std::uint8_t { RETURNING = 1, RETURN_DONE = 2 };
+enum class YawTracking { WAIT_POSITION, WAIT_PENDING, WAIT_TURNING, WAIT_DONE, DONE };
 }  // namespace
 
 // Action 适配器：检查请求 → 转发一次命令 → 监视状态并回传结果。
@@ -226,9 +227,9 @@ private:
       rejectReturn(goal, ERR_PARAM_INVALID, "speed and timeout must be finite; timeout must be nonnegative");
       return;
     }
-    if (request->speed > 0)
+    if (request->speed > 0 && !sdk_.hasSpeedSubscriber())
     {
-      rejectReturn(goal, ERR_NOT_SUPPORTED, "Backend has no per-request return speed; use speed<=0");
+      rejectReturn(goal, ERR_NOT_SUPPORTED, "Planning speed topic has no subscriber; require the new Planner or use speed<=0");
       return;
     }
     if (active_task_ != Task::NONE)
@@ -260,7 +261,8 @@ private:
     return_feedback_.phase = RETURNING;
     return_feedback_.distance_to_home = std::numeric_limits<float>::quiet_NaN();
     return_goal_sequence_ = sdk_.goalSequence();
-    return_goal_.setAccepted("Tracking native return; home and speed remain backend-defined");
+    return_goal_.setAccepted("Tracking native return; home remains backend-defined");
+    if (request->speed > 0) sdk_.setPlanningSpeed(request->speed);
     command_stamp_ = sdk_.returnHome();
     deadline_.start(request->timeout);
     active_task_ = Task::RETURN_HOME;
@@ -290,9 +292,9 @@ private:
       rejectGoto(goal, ERR_PARAM_INVALID, "timeout must be nonnegative");
       return;
     }
-    if (request->speed > 0 || request->yaw_enable)
+    if ((request->speed > 0 && !sdk_.hasSpeedSubscriber()) || (request->yaw_enable && !sdk_.hasYawBackend()))
     {
-      rejectGoto(goal, ERR_NOT_SUPPORTED, "GoalSet supports xyz only; use speed<=0 and yaw_enable=false");
+      rejectGoto(goal, ERR_NOT_SUPPORTED, "Requested speed/yaw requires the new Planner/px4ctrl topics and yaw status");
       return;
     }
     if (!ready() || !sdk_.hasGoalSubscriber())
@@ -325,17 +327,21 @@ private:
     arrival_horiz_dist_ = config_.arrival_horiz_dist;
     stable_time_ = config_.stable_time;
     goto_sent_ = false;
+    yaw_enabled_ = request->yaw_enable;
+    requested_yaw_ = request->yaw;
+    yaw_tracking_ = YawTracking::WAIT_POSITION;
     stable_since_ = ros::Time();
     last_observation_ = ros::Time();
     goto_feedback_ = gotoFeedback();
     goto_feedback_.state = NAVIGATING;
     ROS_INFO("Goto native xyz=(%g,%g,%g), total<=%g m, horizontal<=%g m, stable=%g s; "
-             "native speed=%g; tracking timeout=%g",
+             "planning speed=%g; tracking timeout=%g",
              target[0], target[1], target[2], arrival_total_dist_, arrival_horiz_dist_, stable_time_,
              request->speed, request->timeout);
     goto_goal_.setAccepted("Tracking native planner goto");
     deadline_.start(request->timeout);
     active_task_ = Task::GOTO;
+    if (request->speed > 0) sdk_.setPlanningSpeed(request->speed);
     command_stamp_ = sdk_.resume();
     goto_dispatch_timer_.stop();
     goto_dispatch_timer_.setPeriod(ros::WallDuration(0.2));
@@ -357,6 +363,7 @@ private:
       active_task_ = Task::NONE;
       return;
     }
+    goto_dispatch_goal_sequence_ = sdk_.goalSequence();
     command_stamp_ = sdk_.goTo(goto_target_[0], goto_target_[1], goto_target_[2]);
     goto_sent_ = true;
     ROS_INFO("Published GoalSet; waiting for newer reached and odometry satisfying arrival thresholds");
@@ -501,6 +508,7 @@ private:
     {
       return;
     }
+    if (!updateYawTracking()) return;
     refreshGotoFeedback();
     const auto& state = sdk_.droneState();
     const auto& odom = sdk_.navigationOdometry();
@@ -527,12 +535,69 @@ private:
     goto_feedback_.state = HOLDING;
     if ((observed - stable_since_).toSec() >= stable_time_)
     {
+      if (yaw_enabled_ && yaw_tracking_ != YawTracking::DONE)
+      {
+        if (yaw_tracking_ == YawTracking::WAIT_POSITION)
+        {
+          if (!sdk_.hasYawBackend())
+          {
+            abortActive(ERR_PRECHECK_FAILED, "Yaw backend unavailable after positional arrival");
+            return;
+          }
+          if (sdk_.goalSequence() <= goto_dispatch_goal_sequence_ ||
+              !std::equal(goto_target_.begin(), goto_target_.end(), sdk_.observedGoal().goal.begin()))
+          {
+            abortActive(ERR_CANCELLED, "Goto target changed before arrival yaw dispatch");
+            return;
+          }
+          // 最终目标已发送且满足位置到达判据后才发 yaw，避免被 Continue/目标重置清除。
+          // 原生 String 没有请求 ID：只接受发送后新观察到的 pending -> turning -> done。
+          yaw_goal_sequence_ = sdk_.goalSequence();
+          yaw_status_sequence_ = sdk_.yawStatusSequence();
+          yaw_tracking_ = YawTracking::WAIT_PENDING;
+          sdk_.setArrivalYaw(requested_yaw_);
+          ROS_INFO("Goto position reached; sent arrival yaw=%g rad once, waiting for pending/turning/done", requested_yaw_);
+        }
+        return;  // HOLDING，尚未完成航向；不提前返回位置成功。
+      }
       goto_feedback_.state = GOTO_DONE;
       publishFeedback();
-      goto_goal_.setSucceeded(makeResult<gotoResult>(true, OK, "Controller reached and goto arrival conditions remained satisfied"));
+      goto_goal_.setSucceeded(makeResult<gotoResult>(true, OK, yaw_enabled_
+        ? "Goto position stable and backend arrival yaw completed"
+        : "Controller reached and goto arrival conditions remained satisfied"));
       active_task_ = Task::NONE;
       ROS_INFO("Goto succeeded; final_distance=%g m", goto_feedback_.distance_total);
     }
+  }
+
+  bool updateYawTracking()
+  {
+    if (!yaw_enabled_ || yaw_tracking_ == YawTracking::WAIT_POSITION) return true;
+    if (sdk_.goalSequence() != yaw_goal_sequence_)
+    {
+      abortActive(ERR_CANCELLED, "A new goal superseded the tracked arrival yaw");
+      return false;
+    }
+    if (sdk_.yawStatusSequence() == yaw_status_sequence_) return true;
+    yaw_status_sequence_ = sdk_.yawStatusSequence();
+    const auto& status = sdk_.yawStatus();
+    if (status == "idle")
+    {
+      abortActive(ERR_CANCELLED, "Backend arrival yaw reset/cancelled; no yaw completion reported");
+      return false;
+    }
+    if (yaw_tracking_ == YawTracking::WAIT_PENDING && status == "pending")
+      yaw_tracking_ = YawTracking::WAIT_TURNING;
+    else if (yaw_tracking_ == YawTracking::WAIT_TURNING && status == "turning")
+      yaw_tracking_ = YawTracking::WAIT_DONE;
+    else if (yaw_tracking_ == YawTracking::WAIT_DONE && status == "done")
+      yaw_tracking_ = YawTracking::DONE;
+    else if (status == "pending")
+    {
+      abortActive(ERR_CANCELLED, "Another arrival yaw request superseded this task");
+      return false;
+    }
+    return true;
   }
 
   void cancelTakeoff(TakeoffGoal goal)
@@ -698,6 +763,10 @@ private:
   ros::Publisher flight_state_pub_;
   ros::WallTimer flight_state_timer_, deadline_timer_;
   std::uint64_t return_goal_sequence_{0};
+  std::uint64_t goto_dispatch_goal_sequence_{0}, yaw_goal_sequence_{0}, yaw_status_sequence_{0};
+  bool yaw_enabled_{false};
+  double requested_yaw_{0.0};
+  YawTracking yaw_tracking_{YawTracking::WAIT_POSITION};
   bool was_airborne_{false};
   Config config_;
   ControlSdk sdk_;

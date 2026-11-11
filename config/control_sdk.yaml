@@ -6,6 +6,9 @@ topics:
   control: /control
   goal: /goal_with_id
   trajectory: ""  # /drone_{drone_id}_planning/pos_cmd
+  planning_speed: ""  # /drone_{drone_id}_planning/max_vel，Float64，持续生效的规划速度上限
+  yaw_override: ""  # /drone_{drone_id}_control/yaw_override，Float64，终点绝对航向 rad
+  yaw_status: ""  # /drone_{drone_id}_control/yaw_override/status，String
   flight_state: /nav/status/flight_state
   drone_state: ""  # 留空时使用 /drone_{drone_id}_state
   mavros_state: /mavros/state

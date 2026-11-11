@@ -17,6 +17,9 @@ Config Config::forDrone(int drone_id)
   config.drone_state_topic = "/drone_" + std::to_string(drone_id) + "_state";
   const auto prefix = "/drone_" + std::to_string(drone_id);
   config.trajectory_topic = prefix + "_planning/pos_cmd";
+  config.planning_speed_topic = prefix + "_planning/max_vel";
+  config.yaw_override_topic = prefix + "_control/yaw_override";
+  config.yaw_status_topic = prefix + "_control/yaw_override/status";
   config.navigation_odometry_topic = prefix + "_visual_slam/odom";
   config.localization_map_topic = prefix + "_localization_pcl";
   config.initial_pose_topic = prefix + "_initialpose";
@@ -57,6 +60,9 @@ Config Config::load(const ros::NodeHandle& private_nh)
     if (value.empty()) value = fallback;
   };
   load_topic("topics/trajectory", config.trajectory_topic, defaults.trajectory_topic);
+  load_topic("topics/planning_speed", config.planning_speed_topic, defaults.planning_speed_topic);
+  load_topic("topics/yaw_override", config.yaw_override_topic, defaults.yaw_override_topic);
+  load_topic("topics/yaw_status", config.yaw_status_topic, defaults.yaw_status_topic);
   private_nh.param("services/emergency", config.emergency_service, config.emergency_service);
   private_nh.param("topics/flight_state", config.flight_state_topic, config.flight_state_topic);
   load_topic("localization/map_topic", config.localization_map_topic, defaults.localization_map_topic);
@@ -91,6 +97,7 @@ void Config::validate() const
                            &extended_state_topic, &odometry_topic, &navigation_odometry_topic, &altitude_topic,
                            &takeoff_action, &land_action, &goto_action, &return_home_action,
                            &trajectory_topic, &emergency_service, &flight_state_topic,
+                           &planning_speed_topic, &yaw_override_topic, &yaw_status_topic,
                            &load_map_service, &relocalize_action,
                            &localization_status_topic, &localization_map_topic, &initial_pose_topic,
                            &match_status_topic, &match_transform_topic, &map_echo_topic})
@@ -108,6 +115,8 @@ void Config::validate() const
   }
   if (localization_map_topic == map_echo_topic || match_status_topic == localization_status_topic)
     throw std::invalid_argument("Localization input and output topics must differ");
+  if (std::set<std::string>{planning_speed_topic, yaw_override_topic, yaw_status_topic}.size() != 3)
+    throw std::invalid_argument("Planning speed and yaw topics must differ");
 }
 
 }  // namespace spikive_control_sdk

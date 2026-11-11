@@ -2,6 +2,8 @@
 
 交付日期：2026-11-04。依据 [接口 V1.4](specs/ROS接口规范V1.4.pdf) 与 [阶段附件 V1.1](specs/接口优先级V1.1_20261102.pdf)。用户确认仅修改 Control SDK；后端没有的控制输入明确报错。SLAM 参考 `main@c86c818`，Planner/WayPoint 沿用本工作区。
 
+2026-11-11 更新至 1.4.1：仅接入用户提供新版 Planner 的规划速度与终点 yaw 接口，消息定义保持 V1.4，见 [接入说明](README_速度与航向.md)。下方原交付验证记录保留对应日期。
+
 ## 1. 范围逐项对应
 
 | 阶段 / 序号 | 接口 | 实现与边界 |
@@ -9,9 +11,9 @@
 | 一阶段 1 | `/nav/localization/load_map` | PCD/MD5 校验，转发地图，等待新回显和 waiting_initialpose |
 | 一阶段 2 | `/nav/localization/relocalize` | world 初值；本轮 matching→localized 加新修正，回报 fitness/threshold/attempt_count；不重复触发 ICP |
 | 一阶段 3 | `/nav/flight/takeoff` | cmd=1；新 tookoff 成功；非零 target_altitude 报 20，0 沿用后端高度 |
-| 一阶段 4 | `/nav/flight/goto` | Continue→0.2 s→原生 GoalSet；控制器 reached 加 SDK 距离/稳定观察；指定速度/yaw 报 20 |
+| 一阶段 4 | `/nav/flight/goto` | Continue→0.2 s→原生 GoalSet；reached 加距离/稳定观察；正 speed 转规划上限；启用 yaw 还需本次航向 done |
 | 一阶段 5 | `/nav/safety/emergency` | HOVER/STOP 均为 cmd=5 位置保持；RESUME 为 cmd=4 当前点继续；准入后结束已有飞行 Action |
-| 一阶段 6 | `/nav/flight/return_home` | cmd=3；观察新目标及 returned false→true；返航距离用新目标减导航位置，缺少目标时 NaN；正 speed 报 20 |
+| 一阶段 6 | `/nav/flight/return_home` | cmd=3；观察新目标及 returned false→true；距离用新目标减导航位置，缺值 NaN；正 speed 转规划上限 |
 | 一阶段 7 | `/nav/status/flight_state` | 2 Hz 已知状态快照；读取控制器/MAVROS并观察外部 /control、GoalSet；无依据不伪造状态 |
 | 二阶段 1 | `/nav/data/pointcloud` | `/drone_{id}_cloud_registered` 原样映射，包含原 Header.seq 和二进制布局 |
 | 二阶段 2 | `/nav/data/odom` | `/drone_{id}_visual_slam/odom` 原样映射；协方差及 twist 取实际源版本，不拼接 MAVROS |

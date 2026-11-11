@@ -22,7 +22,7 @@ from mavros_msgs.msg import State, ExtendedState, Altitude
 from nav_msgs.msg import Odometry
 from quadrotor_msgs.msg import GoalSet, PositionCommand
 from sensor_msgs.msg import PointCloud2, PointField
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64
 from spikive_control_sdk.msg import (takeoffAction, takeoffGoal, landAction, landGoal,
     gotoAction, gotoGoal, return_homeAction, return_homeGoal, RecordAction, RecordGoal,
     relocalizeAction, relocalizeGoal, FlightState, takeoffActionFeedback, landActionFeedback,
@@ -179,9 +179,39 @@ class Integration(unittest.TestCase):
     def tearDownClass(cls): cls.b.close()
 
     def setUp(self):
+        self.optional_connections = []
         self.b.s.update(ground=1, landed=True, tookoff=False, reached=False, returned=False,
                         connected=True, armed=False, xyz=(0., 0., 0.))
         time.sleep(.1)
+
+    def tearDown(self):
+        for name in ['takeoff', 'land', 'goto', 'return_home']:
+            client = self.clients[name]
+            if client.get_state() in (GoalStatus.PENDING, GoalStatus.ACTIVE):
+                client.cancel_goal()
+                client.wait_for_result(rospy.Duration(2))
+        for connection in self.optional_connections:
+            connection.unregister()
+        if self.optional_connections: time.sleep(.15)
+
+    def enable_extensions(self):
+        self.speeds, self.yaws = [], []
+        self.yaw_status = rospy.Publisher('/drone_42_control/yaw_override/status', String, queue_size=10, latch=True)
+        self.optional_connections = [self.yaw_status,
+            rospy.Subscriber('/drone_42_planning/max_vel', Float64, lambda m: self.speeds.append(m.data)),
+            rospy.Subscriber('/drone_42_control/yaw_override', Float64, lambda m: self.yaws.append(m.data))]
+        self.yaw_status.publish(String('done'))  # Simulate a latched completion from a previous request.
+        self.assertTrue(wait_for(lambda: self.yaw_status.get_num_connections() > 0))
+        time.sleep(.2)
+
+    def arrive(self, xyz):
+        self.b.s.update(xyz=xyz, reached=True)
+
+    def wait_result(self, name, code=0):
+        client = self.clients[name]
+        self.assertTrue(client.wait_for_result(rospy.Duration(4)))
+        self.assertEqual(client.get_result().error_code, code, client.get_result())
+        return client.get_result()
 
     def airborne(self):
         self.b.s.update(ground=2, landed=False, armed=True)
@@ -346,7 +376,91 @@ class Integration(unittest.TestCase):
 
     def test_10_own_control_observer_is_not_backend_readiness(self):
         self.b.subs[0].unregister(); time.sleep(.3)
-        self.result('takeoff', takeoffGoal(timeout=.2), 12)
+        try: self.result('takeoff', takeoffGoal(timeout=.2), 12)
+        finally: self.b.subs[0] = rospy.Subscriber('/control', cmd, self.b.on_control)
+
+    def test_11_goto_return_speed_and_native_default(self):
+        self.enable_extensions(); self.airborne()
+        c = self.clients['goto']
+        c.send_goal(gotoGoal(position=[5, 3, 2], speed=.7, timeout=3))
+        self.assertTrue(wait_for(lambda: self.speeds and self.b.goals and list(self.b.goals[-1].goal) == [5, 3, 2]))
+        self.assertAlmostEqual(self.speeds[-1], .7, places=6)
+        self.result('return_home', return_homeGoal(speed=.4, timeout=2), 21)
+        self.assertEqual(len(self.speeds), 1)  # Rejected requests cannot change persistent speed.
+        self.arrive((5., 3., 2.)); self.assertTrue(self.wait_result('goto').success)
+        self.b.s.update(reached=False)
+        c.send_goal(gotoGoal(position=[6, 3, 2], speed=0, timeout=3))
+        self.assertTrue(wait_for(lambda: list(self.b.goals[-1].goal) == [6, 3, 2]))
+        self.arrive((6., 3., 2.)); self.wait_result('goto')
+        self.assertEqual(len(self.speeds), 1)  # speed<=0 sends no reset/zero speed.
+        self.b.s.update(returned=False)
+        self.clients['return_home'].send_goal(return_homeGoal(speed=.8, timeout=3))
+        self.assertTrue(wait_for(lambda: len(self.speeds) == 2 and list(self.b.goals[-1].goal) == [9, 8, 2]))
+        self.assertAlmostEqual(self.speeds[-1], .8, places=6)
+        self.b.s.update(xyz=(9., 8., 2.)); time.sleep(.12)
+        self.b.s.update(returned=True); self.assertTrue(self.wait_result('return_home').success)
+        self.assertEqual(len(self.speeds), 2)
+        self.assertEqual(self.yaws, [])
+
+    def test_12_yaw_requires_new_ordered_status_after_position(self):
+        self.enable_extensions(); self.airborne()
+        c = self.clients['goto']
+        c.send_goal(gotoGoal(position=[5, 3, 2], speed=.6, yaw=4.5, yaw_enable=True, timeout=4))
+        self.assertTrue(wait_for(lambda: self.b.goals and list(self.b.goals[-1].goal) == [5, 3, 2]))
+        time.sleep(.25)
+        self.assertFalse(self.yaws); self.assertIsNone(c.get_result())
+        self.arrive((5., 3., 2.))
+        self.assertTrue(wait_for(lambda: self.yaws))
+        self.assertEqual(self.yaws, [4.5])  # No SDK axis/unit conversion.
+        self.assertIsNone(c.get_result())
+        self.yaw_status.publish(String('done')); time.sleep(.1)
+        self.assertIsNone(c.get_result())  # A stale/unrelated done cannot complete this task.
+        self.yaw_status.publish(String('pending')); time.sleep(.1)
+        self.yaw_status.publish(String('done')); time.sleep(.1)
+        self.assertIsNone(c.get_result())  # Must observe turning too.
+        self.yaw_status.publish(String('turning')); time.sleep(.1)
+        self.assertEqual(self.b.feedbacks['goto'][-1].state, 2)
+        self.yaw_status.publish(String('done'))
+        self.assertTrue(self.wait_result('goto').success)
+        self.assertEqual(len(self.yaws), 1)
+        # An identical next target with yaw disabled uses the existing positional contract.
+        c.send_goal(gotoGoal(position=[5, 3, 2], yaw_enable=False, timeout=2))
+        self.assertTrue(self.wait_result('goto').success)
+        self.assertEqual(len(self.yaws), 1)
+
+    def test_13_yaw_backend_reset_and_new_identical_goal_abort(self):
+        self.enable_extensions(); self.airborne(); self.arrive((5., 3., 2.))
+        c = self.clients['goto']
+        for reset in ['idle', 'goal', 'pending']:
+            before = len(self.yaws)
+            c.send_goal(gotoGoal(position=[5, 3, 2], yaw=1, yaw_enable=True, timeout=3))
+            self.assertTrue(wait_for(lambda: len(self.yaws) > before))
+            self.yaw_status.publish(String('pending')); time.sleep(.1)
+            if reset in ('idle', 'pending'): self.yaw_status.publish(String(reset))
+            else: self.b.publishers['goal'].publish(GoalSet(drone_id=42, goal=[5, 3, 2]))
+            self.assertFalse(self.wait_result('goto', 3).success)
+            self.assertEqual(c.get_state(), GoalStatus.ABORTED)
+
+    def test_14_yaw_timeout_cancel_and_late_done_do_not_control(self):
+        self.enable_extensions(); self.airborne(); self.arrive((5., 3., 2.))
+        c = self.clients['goto']
+        c.send_goal(gotoGoal(position=[5, 3, 2], yaw=1, yaw_enable=True, timeout=.8))
+        self.assertTrue(wait_for(lambda: self.yaws))
+        controls = len(self.b.commands)
+        self.yaw_status.publish(String('pending'))
+        self.wait_result('goto', 2)
+        self.assertEqual(len(self.b.commands), controls)
+        self.assertEqual(len(self.yaws), 1)
+        c.send_goal(gotoGoal(position=[5, 3, 2], yaw=2, yaw_enable=True, timeout=3))
+        self.assertTrue(wait_for(lambda: len(self.yaws) == 2))
+        self.yaw_status.publish(String('pending')); time.sleep(.1)
+        controls = len(self.b.commands)
+        c.cancel_goal(); self.wait_result('goto', 3)
+        self.yaw_status.publish(String('turning')); time.sleep(.05)
+        self.yaw_status.publish(String('done')); time.sleep(.15)
+        self.assertEqual(c.get_state(), GoalStatus.PREEMPTED)
+        self.assertEqual(len(self.b.commands), controls)
+        self.assertEqual(len(self.yaws), 2)
 
 
 if __name__ == '__main__':

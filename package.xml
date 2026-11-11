@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>spikive_control_sdk</name>
-  <version>1.4.0</version>
+  <version>1.4.1</version>
   <description>ROS1 Noetic V1.4 modular flight, localization, bag recording and native data adapters.</description>
   <maintainer email="user@example.com">Spikive</maintainer>
   <license>BSD-3-Clause</license>

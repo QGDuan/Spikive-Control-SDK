@@ -2,10 +2,14 @@
 
 #include <controller_msgs/cmd.h>
 #include <quadrotor_msgs/GoalSet.h>
+#include <std_msgs/Float64.h>
+#include <std_msgs/String.h>
 
 #include <cmath>
 #include <string>
 #include <utility>
+#include <set>
+#include <stdexcept>
 
 namespace spikive_control_sdk
 {
@@ -26,8 +30,21 @@ ControlSdk::ControlSdk(ros::NodeHandle& nh, const Config& config)
   : drone_id_(config.drone_id), world_frame_(config.world_frame)
 {
   config.validate();
+  if (std::set<std::string>{nh.resolveName(config.planning_speed_topic), nh.resolveName(config.yaw_override_topic),
+                            nh.resolveName(config.yaw_status_topic)}.size() != 3)
+    throw std::invalid_argument("Planning speed/yaw topics resolve to the same name");
   control_pub_ = nh.advertise<controller_msgs::cmd>(config.control_topic, 1, false);
   goal_pub_ = nh.advertise<quadrotor_msgs::GoalSet>(config.goal_topic, 1, false);
+  speed_pub_ = nh.advertise<std_msgs::Float64>(config.planning_speed_topic, 1, false);
+  yaw_pub_ = nh.advertise<std_msgs::Float64>(config.yaw_override_topic, 1, false);
+  yaw_status_sub_ = nh.subscribe<std_msgs::String>(config.yaw_status_topic, 20,
+    [this](const std_msgs::String::ConstPtr& msg)
+    {
+      if (msg->data != "idle" && msg->data != "pending" && msg->data != "turning" && msg->data != "done") return;
+      yaw_status_ = msg->data;
+      ++yaw_status_sequence_;
+      notifyUpdate();
+    });
   state_sub_ = nh.subscribe(config.drone_state_topic, 10, &ControlSdk::stateCallback, this);
   mavros_sub_ = nh.subscribe(config.mavros_state_topic, 10, &ControlSdk::mavrosCallback, this);
   extended_sub_ = nh.subscribe(config.extended_state_topic, 10, &ControlSdk::extendedCallback, this);
@@ -97,6 +114,22 @@ ros::Time ControlSdk::goTo(float x, float y, float z)
   const auto stamp = ros::Time::now();
   goal_pub_.publish(goal);
   return stamp;
+}
+
+void ControlSdk::setPlanningSpeed(double speed)
+{
+  if (!std::isfinite(speed) || speed <= 0) throw std::invalid_argument("Planning speed must be finite and positive");
+  std_msgs::Float64 msg;
+  msg.data = speed;
+  speed_pub_.publish(msg);
+}
+
+void ControlSdk::setArrivalYaw(double yaw)
+{
+  if (!std::isfinite(yaw)) throw std::invalid_argument("Arrival yaw must be finite");
+  std_msgs::Float64 msg;
+  msg.data = yaw;
+  yaw_pub_.publish(msg);
 }
 
 ros::Time ControlSdk::sendCommand(std::uint8_t value)
