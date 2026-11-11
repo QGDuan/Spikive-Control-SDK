@@ -1,4 +1,6 @@
-# 1.4.1：SDK → Planner 速度与终点航向
+# v1.5：SDK → Planner 速度与终点航向
+
+v1.5.0 发布包含以下速度/yaw 功能（于 1.4.1 接入）；运行消息定义不变。安装见 [v1.5 安装说明](README_V1.5_安装.md)。
 
 2026-11-11。只修改 Control SDK；以用户提供的 `src(1).zip` 与 `README (1).md` 的速度/yaw 接口为依据，不替换 Planner。包校验 SHA256：`28779bfbc0ea9d0c4a8e151e4a5fa7bb15160625716daeb5d1472fd99177ece4`。
 

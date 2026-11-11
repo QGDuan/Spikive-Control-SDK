@@ -1,6 +1,6 @@
 # Spikive-Control-SDK
 
-ROS1 Noetic C++ SDK，负责已有命令转发、状态监视和数据整理。当前版本 **1.4.1**，按 [V1.4 规范](docs/specs/ROS接口规范V1.4.pdf) 和 [阶段附件](docs/specs/接口优先级V1.1_20261102.pdf) 提供一阶段接口、二阶段 1～3 项，并保留 Land。
+ROS1 Noetic C++ SDK，负责已有命令转发、状态监视和数据整理。当前版本 **1.5.0**，包含 Goto/Return 规划速度上限与 Goto 终点 yaw 控制；消息沿用 [V1.4 规范](docs/specs/ROS接口规范V1.4.pdf) 和 [阶段附件](docs/specs/接口优先级V1.1_20261102.pdf)，提供一阶段接口、二阶段 1～3 项，并保留 Land。
 
 | 节点 | 功能 | 对应后端 |
 | --- | --- | --- |
@@ -15,6 +15,7 @@ roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=2
 
 `drone_id` 默认 1，须与现有后端一致。各节点也可分别用 `flight.launch`、`localization.launch`、`map_record.launch`、`data_mapping.launch` 启动；总 launch 支持 `enable_<模块>:=false`。后端仍由原系统启动。
 
+- [v1.5 安装包说明](docs/README_V1.5_安装.md)
 - [最简命令与 rostopic 监控](docs/README_命令行测试.md)
 - [V1.4 范围、接口差异与验证](docs/README_V1.4_实现与验证.md)
 - [中文开发逻辑与模块对应](docs/开发逻辑.md)
@@ -31,4 +32,4 @@ roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=2
 
 **升级**：V1.4 修改四个飞行 Action 的字段和阶段编号，旧客户端必须重新编译。C++ 定位库独立为 `spikive_localization_sdk`；原单节点拆为上表四节点，私有参数路径随节点名改变。LoadMap/Relocalize 字段保持不变。二阶段后处理、三阶段配置不在本轮范围。
 
-1.4.0 → 1.4.1 不修改消息定义；重编译 SDK 节点并部署带 max_vel/yaw_override 接口的新后端即可。SDK 不替换 Planner 源码，也不接管 MAVROS setpoint。
+1.5.0 正式包含 1.4.1 接入的速度/yaw 功能，与 1.4.0/1.4.1 的消息定义一致；重编译 SDK 节点并部署带 max_vel/yaw_override 接口的新后端即可。SDK 不替换 Planner 源码，也不接管 MAVROS setpoint。
