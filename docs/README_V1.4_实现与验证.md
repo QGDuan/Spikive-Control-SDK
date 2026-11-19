@@ -20,7 +20,7 @@
 | 二阶段 3 | `/nav/map/record` | 对接 SLAM bag_record_start/stop/status；request_id 确认，停止后保存已关闭 bag |
 | 保留接口 | `/nav/flight/land` | 同步 V1.4 字段；新 landed 与 MAVROS ON_GROUND 共同确认；不主动上锁 |
 
-附件一阶段没有单列 Land；本轮保留并迁移已有能力。二阶段第 4 项 `/nav/map/post_process` 及三阶段接口未加入。
+附件一阶段没有单列 Land；本轮保留并迁移已有能力。二阶段第 4 项 `/nav/map/post_process` 及三阶段接口未加入。v1.6 已新增独立后处理节点，见 [点云后处理说明](README_点云后处理.md)。
 
 后续按用户要求，data_mapping 内整合原 `visual_pointcloud_node`：额外发布 `/nav/data/visual_pointcloud`，默认均匀保留 10% 点。原有两个数据接口保持完整透传；配置见 [数据映射说明](README_数据映射.md)。
 

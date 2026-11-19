@@ -1,24 +1,26 @@
 # Spikive-Control-SDK
 
-ROS1 Noetic C++ SDK，负责已有命令转发、状态监视和数据整理。当前版本 **1.6.0**，包含 Goto/Return 规划速度上限与 Goto 终点 yaw 控制；飞行消息沿用 [V1.4 规范](docs/specs/ROS接口规范V1.4.pdf) 和 [阶段附件](docs/specs/接口优先级V1.1_20261102.pdf)，提供一阶段接口、二阶段 1～3 项，并保留 Land。
+ROS1 Noetic C++ SDK，负责已有命令转发、状态监视和数据整理。当前版本 **1.6.0**，包含 Goto/Return 规划速度上限与 Goto 终点 yaw 控制；飞行消息沿用 [V1.4 规范](docs/specs/ROS接口规范V1.4.pdf) 和 [阶段附件](docs/specs/接口优先级V1.1_20261102.pdf)，提供一阶段接口、二阶段 1～4 项，并保留 Land。
 
 | 节点 | 功能 | 对应后端 |
 | --- | --- | --- |
 | `spikive_flight_node` | Takeoff / Goto / Return / Land、Emergency、FlightState | Planner、FlightManager、px4ctrl、MAVROS 状态 |
 | `spikive_localization_node` | LoadMap、Relocalize、定位状态 | SLAM global_match |
 | `spikive_map_record_node` | 独立 rosbag 录制；命令行指定 topics，停止后保存 | SDK 管理的 ROS 原生 Recorder |
+| `spikive_post_process_node` | 读取已关闭 bag 的 registered cloud，全量拼接导出 PCD | SDK 原生 rosbag + PCL |
 | `spikive_data_mapping_node` | Odometry / PointCloud 原样映射、可视化点云抽稀 | SLAM fusion_repub |
 
 ```bash
 roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=2
 ```
 
-`drone_id` 默认 1，须与现有后端一致。各节点也可分别用 `flight.launch`、`localization.launch`、`map_record.launch`、`data_mapping.launch` 启动；总 launch 支持 `enable_<模块>:=false`。后端仍由原系统启动。
+`drone_id` 默认 1，须与现有后端一致。各节点也可分别用 `flight.launch`、`localization.launch`、`map_record.launch`、`post_process.launch`、`data_mapping.launch` 启动；总 launch 支持 `enable_<模块>:=false`。后端仍由原系统启动。
 
 - [v1.6 同事交接入口](docs/交接说明_V1.6.md)
 - [v1.6 开发记录](docs/开发记录_V1.6.md)
 - [地面站前后端交互合同](docs/地面站交互_V1.6.md)
 - [独立录包：话题列表与命令行测试](docs/README_录包.md)
+- [点云后处理与 PCD 导出](docs/README_点云后处理.md)
 - [v1.5 历史安装包说明](docs/README_V1.5_安装.md)
 - [最简命令与 rostopic 监控](docs/README_命令行测试.md)
 - [V1.4 范围、接口差异与验证](docs/README_V1.4_实现与验证.md)
@@ -34,7 +36,7 @@ roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=2
 
 `data_mapping` 已整合原 `visual_pointcloud_node` 逻辑，额外发布 `/nav/data/visual_pointcloud`，默认均匀保留 10% 的完整点记录。比例和开关见 `config/control_sdk.yaml` 的 `visual_pointcloud`；原 `/nav/data/pointcloud` 仍保留完整点云。
 
-**升级**：V1.4 修改四个飞行 Action 的字段和阶段编号，旧客户端必须重新编译。C++ 定位库独立为 `spikive_localization_sdk`；原单节点拆为上表四节点，私有参数路径随节点名改变。LoadMap/Relocalize 字段保持不变。二阶段后处理、三阶段配置不在本轮范围。
+**升级**：V1.4 修改四个飞行 Action 的字段和阶段编号，旧客户端必须重新编译。C++ 定位库独立为 `spikive_localization_sdk`；原单节点拆为上表五节点，私有参数路径随节点名改变。LoadMap/Relocalize 字段保持不变。二阶段后处理中的 `post_process` 已作为独立节点提供，三阶段配置仍不在本轮范围。
 
 1.5.0 正式包含 1.4.1 接入的速度/yaw 功能，与 1.4.0/1.4.1 的消息定义一致；重编译 SDK 节点并部署带 max_vel/yaw_override 接口的新后端即可。SDK 不替换 Planner 源码，也不接管 MAVROS setpoint。
 
