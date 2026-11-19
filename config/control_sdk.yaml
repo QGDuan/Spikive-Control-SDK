@@ -48,9 +48,76 @@ localization:
 services:
   emergency: /nav/safety/emergency
 
-# SDK 独立录包；每次开始的 topics 由 Record Goal 指定，不按 drone_id 推断。
+# SDK 独立录包。Goal.topics 非空时覆盖配置。
 record:
   action: /nav/map/record
+  split_size_mib: 500
+  topics:
+    - /rslidar_imu_data
+    - /rslidar_points
+    - /cloud_registered_body
+    - /Odometry
+    - /clock
+    - /control
+    - /diagnostics
+    - /drone_2_auto_manager_status
+    - /drone_2_cloud_registered
+    - /drone_2_control
+    - /drone_2_control/hold_status
+    - /drone_2_control/rc_drive
+    - /drone_2_ego_planner_node/failed_list
+    - /drone_2_ego_planner_node/global_list
+    - /drone_2_ego_planner_node/goal_point
+    - /drone_2_ego_planner_node/goal_point_array
+    - /drone_2_ego_planner_node/grid_map/occupancy
+    - /drone_2_ego_planner_node/grid_map/occupancy_inflate
+    - /drone_2_ego_planner_node/init_list
+    - /drone_2_ego_planner_node/optimal_list
+    - /drone_2_ego_planner_node/optimal_list_array
+    - /drone_2_image_raw/mouse_click
+    - /drone_2_localization_cloud_status
+    - /drone_2_localization_match_status
+    - /drone_2_odom_visualization/height
+    - /drone_2_odom_visualization/path
+    - /drone_2_odom_visualization/pose
+    - /drone_2_odom_visualization/robot
+    - /drone_2_odom_visualization/robot_array
+    - /drone_2_odom_visualization/sensor
+    - /drone_2_odom_visualization/trajectory
+    - /drone_2_odom_visualization/velocity
+    - /drone_2_planning/control_hold
+    - /drone_2_planning/data_display
+    - /drone_2_planning/goal_status
+    - /drone_2_planning/operator_hold
+    - /drone_2_planning/pos_cmd
+    - /drone_2_planning/trajectory
+    - /drone_2_state
+    - /drone_2_terrain_following/status
+    - /drone_2_traj_server/heartbeat
+    - /drone_2_visual_slam/odom
+    - /drone_state
+    - /dynablox_detector/dynamic_points
+    - /foxglove_nodelet_manager/bond
+    - /goal_with_id
+    - /mavros/altitude
+    - /mavros/battery
+    - /mavros/companion_process/status
+    - /mavros/local_position/odom
+    - /mavros/odometry/in
+    - /mavros/param/param_value
+    - /mavros/rc/in
+    - /mavros/state
+    - /mavros/sys_status
+    - /new_goals_arrow
+    - /nvblox_detector/dynamic_points
+    - /path
+    - /rc_drive/intent_arrow
+    - /rc_drive/intent_arrow_array
+    - /rc_drive/status
+    - /terrain_surface_map
+    - /tf
+    - /tf_static
+    - /track_drone_point
 
 # 只映射 topic，所有消息内容和采样时间原样保留。
 data:

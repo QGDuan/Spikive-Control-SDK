@@ -124,7 +124,7 @@ class Recording(unittest.TestCase):
         self.start(code=19)  # Existing file cannot be overwritten.
 
     def test_02_empty_invalid_topics_and_stop_arguments(self):
-        for topics in [[], ['odom'], ['/record_test/.*'], ['/record_test/odom', '/record_test/odom']]:
+        for topics in [['odom'], ['/record_test/.*'], ['/record_test/odom', '/record_test/odom']]:
             self.start(topics, code=19)
         self.command(RecordGoal(cmd=2, timeout=1), 12)
         self.start()
@@ -189,7 +189,17 @@ class Recording(unittest.TestCase):
         self.command(RecordGoal(cmd=2, timeout=3), 99)
         self.assertFalse(os.path.exists(self.target))
 
-    def test_09_shutdown_closes_owned_recording(self):
+    def test_09_empty_goal_uses_the_configured_topics(self):
+        self.text.publish('configured topic')
+        self.start([])
+        self.assertTrue(wait_for(lambda: self.text.get_num_connections() > 0))
+        time.sleep(.2)
+        self.command(RecordGoal(cmd=2, timeout=3))
+        with rosbag.Bag(self.target) as bag:
+            self.assertEqual([(topic, msg.data) for topic, msg, _ in bag.read_messages()],
+                             [('/record_test/text', 'configured topic')])
+
+    def test_10_shutdown_closes_owned_recording(self):
         self.start()
         pid = self.worker_pid(); self.assertIsNotNone(pid)
         rosnode.kill_nodes(['/spikive_map_record_node'])

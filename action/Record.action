@@ -2,7 +2,7 @@ uint32 cmd  # 1 start recording, 2 stop and save
 string bag_path  # Absolute destination directory, cmd=1.
 string bag_name  # Name without path/extension, cmd=1.
 float32 timeout  # Deadline for this command, not recording duration; 0 disables.
-string[] topics  # cmd=1: explicit absolute ROS topic names; cmd=2: empty (use current session).
+string[] topics  # cmd=1: explicit topic override, or empty to use record/topics; cmd=2: empty.
 ---
 bool success
 uint8 error_code

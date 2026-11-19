@@ -1,6 +1,6 @@
 # SDK 独立录包（1.6.0）
 
-SDK 自己运行 ROS 原生 `rosbag::Recorder`（与 `rosbag record` 同一实现），不调用 SLAM 录包后端。每次开始通过 `topics` 指定完整话题列表，原消息、坐标、时间戳保持不变。
+SDK 使用 ROS 原生 `rosbag::Recorder`。在 [control_sdk.yaml](../config/control_sdk.yaml) 的 `record.topics` 配置默认话题，修改后重启录包节点。客户端可传非空 `topics` 覆盖整份清单。录制保留原消息、坐标和时间戳。
 
 `Record.action` 新增 `string[] topics`，消息 MD5 与 1.5 不兼容。先在 Noetic 工作区重新编译 SDK 和使用 Record 的客户端，再在每个终端重新 source：
 
@@ -53,14 +53,14 @@ rosbag info /home/colman/data/record_test.bag
 
 | 项目 | 行为 |
 | --- | --- |
-| `cmd=1` | 开始；`bag_path` 为绝对目录，`bag_name` 不带路径和扩展名，`topics` 必填 |
-| `topics` | 非空、无重复的绝对 ROS 话题名；不支持正则、通配符或空列表表示全录，不依赖 drone_id |
+| `cmd=1` | 开始，`bag_path` 为绝对目录，`bag_name` 不带路径和扩展名 |
+| `topics` | 空列表使用 SDK 配置，非空列表覆盖配置。最终列表必须非空、无重复，且使用绝对 ROS 话题名 |
 | `cmd=2` | 停止当前 SDK 会话；路径、名称和 topics 留空，使用开始时的配置 |
 | `timeout` | 本次开始/停止命令的期限，秒；0 不限时，不是录包总时长 |
 | 开始成功 | `feedback.state=1`；`result.success=true,error_code=0`，文件已打开，录制继续 |
 | 停止成功 | `feedback.state=3`；`result.success=true,error_code=0`，最终 bag 已关闭并保存，message 给出路径 |
 | 反馈 | 等待打开为 0，录制/等待停止为 1，完成为 3，失败为 4；Action 结束后不持续发布反馈 |
-| 参数错误 / 重复开始 | `error_code=19` / `21`；空 topics 也返回 19 |
+| 参数错误 / 重复开始 | `error_code=19` / `21`，未提供请求或配置话题时返回 19 |
 | 无任务可停 / ROS 时间无效 | `error_code=12` |
 | 超时 / 取消 | `error_code=2` / `3`；只结束命令跟踪，仍需 cmd=2 停止；已请求的停止继续 |
 | 进程或文件错误 | `error_code=99`；保留暂存文件路径，日志记录原因 |

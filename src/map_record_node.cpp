@@ -46,11 +46,14 @@ public:
     std::string action;
     pnh.param<std::string>("record/action", action, "/nav/map/record");
     if (action.empty()) throw std::invalid_argument("Record action must not be empty");
+    if (pnh.hasParam("record/topics") && !pnh.getParam("record/topics", default_topics_))
+      throw std::invalid_argument("record/topics must be a list of strings");
+    if (!default_topics_.empty()) validateRecordingTopics(default_topics_);
     server_.reset(new Server(nh, action, [this](Handle h) { onGoal(h); },
                             [this](Handle h) { onCancel(h); }, false));
     timer_ = nh.createWallTimer(ros::WallDuration(0.05), &MapRecordNode::onTimer, this);
     server_->start();
-    ROS_INFO_STREAM("SDK rosbag recorder: " << action << "; cmd=1 requires explicit topics; cmd=2 closes the bag");
+    ROS_INFO_STREAM("SDK rosbag recorder: " << action << "; cmd=1 uses configured topics or an explicit override");
   }
 
   ~MapRecordNode()
@@ -78,7 +81,7 @@ private:
   void reject(Handle h, ErrorCode code, const std::string& text)
   { h.setRejected(makeResult<RecordResult>(false, code, text), text); }
 
-  void startWorker(const RecordGoal& req)
+  void startWorker(const std::vector<std::string>& topics)
   {
     // mkdtemp 创建私有目录，避免录制期间覆盖既有文件或另一进程的输出。
     std::string pattern = (boost::filesystem::path(destination_).parent_path() / ".spikive-record-XXXXXX").string();
@@ -89,7 +92,7 @@ private:
     const auto ready_topic = pnh_.resolveName("begin_write_" + std::to_string(++sequence_));
     ready_sub_ = nh_.subscribe(ready_topic, 1, &MapRecordNode::onReady, this);
     std::vector<std::string> args = {"spikive_map_record_node", "--record-worker", std::to_string(::getpid()), source_, ready_topic};
-    args.insert(args.end(), req.topics.begin(), req.topics.end());
+    args.insert(args.end(), topics.begin(), topics.end());
     std::vector<char*> argv;
     for (auto& arg : args) argv.push_back(&arg[0]);
     argv.push_back(nullptr);
@@ -105,7 +108,7 @@ private:
     ready_ = stopping_ = false;
     last_error_.clear();
     ROS_INFO_STREAM("Recording PID " << pid_ << " -> " << destination_);
-    for (const auto& topic : req.topics) ROS_INFO_STREAM("  record topic: " << topic);
+    for (const auto& topic : topics) ROS_INFO_STREAM("  record topic: " << topic);
   }
 
   void onGoal(Handle h)
@@ -117,15 +120,16 @@ private:
     { reject(h, ERR_PARAM_INVALID, "cmd must be 1/2 and timeout finite/nonnegative"); return; }
     if (req->cmd == 1)
     {
+      const auto& topics = req->topics.empty() ? default_topics_ : req->topics;
       if (pid_ > 0) { reject(h, ERR_BUSY, "SDK recording is already active; stop with cmd=2 first"); return; }
       if (!ros::Time::isValid()) { reject(h, ERR_PRECHECK_FAILED, "Require valid ROS time"); return; }
       try
       {
-        validateRecordingTopics(req->topics);
+        validateRecordingTopics(topics);
         destination_ = recordingDestination(req->bag_path, req->bag_name);
       }
       catch (const std::exception& e) { reject(h, ERR_PARAM_INVALID, e.what()); return; }
-      try { startWorker(*req); }
+      try { startWorker(topics); }
       catch (const std::exception& e) { reject(h, ERR_INTERNAL, e.what()); return; }
     }
     else
@@ -235,6 +239,7 @@ private:
   bool ready_{false}, stopping_{false}, active_{false};
   unsigned command_{0};
   std::uint64_t sequence_{0};
+  std::vector<std::string> default_topics_;
   std::string destination_, staging_, source_, last_error_;
   TaskDeadline deadline_;
   ros::Subscriber ready_sub_;
