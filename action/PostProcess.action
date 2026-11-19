@@ -1,0 +1,12 @@
+uint32 cmd  # 1 start post-process, 2 stop current post-process
+string map_path  # Output PCD directory; empty uses post_process/output_directory.
+string map_name  # Output PCD name without path/extension; empty uses the bag stem.
+float32 timeout  # Deadline for this post-process command; 0 disables.
+string bag_path  # Optional input bag directory; empty uses post_process/input_directory.
+string bag_name  # Optional input bag name without path/extension; empty uses newest bag.
+---
+bool success
+uint8 error_code
+string message
+---
+uint8 state  # 0 IDLE 1 PROCESSING 3 COMPLETED 4 FAILED

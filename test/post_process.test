@@ -1,0 +1,12 @@
+<launch>
+  <param name="use_sim_time" value="false"/>
+  <node pkg="spikive_control_sdk" type="spikive_post_process_node" name="spikive_post_process_node" output="screen">
+    <rosparam command="load" file="$(find spikive_control_sdk)/config/control_sdk.yaml"/>
+    <param name="drone_id" value="2" type="int"/>
+    <param name="post_process/pointcloud_topic" value="/test/cloud" type="string"/>
+    <param name="post_process/input_directory" value="/tmp/spikive_post_process_test" type="string"/>
+    <param name="post_process/output_directory" value="/tmp/spikive_post_process_test/out" type="string"/>
+    <param name="post_process/feedback_period" value="0.1" type="double"/>
+  </node>
+  <test test-name="post_process" pkg="spikive_control_sdk" type="post_process_test.py" time-limit="120"/>
+</launch>

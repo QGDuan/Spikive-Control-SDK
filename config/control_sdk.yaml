@@ -120,6 +120,19 @@ record:
     - /tf_static
     - /track_drone_point
 
+# SDK 点云后处理：读取已关闭 bag 中的 cloud topic，全量拼接为 PCD。
+# 输入 bag 由 Goal.bag_path/bag_name 指定；为空时使用 input_directory 下最新 .bag。
+post_process:
+  action: /nav/map/post_process
+  pointcloud_topic: ""  # 留空使用 /drone_{drone_id}_cloud_registered
+  input_directory: ""  # 留空使用 $HOME/spikive-output
+  output_directory: ""  # 留空使用 $HOME/spikive-output
+  lio_nodes:  # 存在任一节点时拒绝后处理，等待 SLAM/LIO 结束
+    - /laserMapping
+    - /slam_to_uav_transform
+  max_points: 0  # 0 不限制；正数用于防止内存失控
+  feedback_period: 0.2  # 秒
+
 # 只映射 topic，所有消息内容和采样时间原样保留。
 data:
   pointcloud_source: ""  # /drone_{drone_id}_cloud_registered

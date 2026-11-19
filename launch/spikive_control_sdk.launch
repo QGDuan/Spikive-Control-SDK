@@ -16,6 +16,11 @@
     <arg name="drone_id" value="$(arg drone_id)"/>
     <arg name="config_file" value="$(arg config_file)"/>
   </include>
+  <arg name="enable_post_process" default="true"/>
+  <include if="$(arg enable_post_process)" file="$(find spikive_control_sdk)/launch/post_process.launch">
+    <arg name="drone_id" value="$(arg drone_id)"/>
+    <arg name="config_file" value="$(arg config_file)"/>
+  </include>
   <arg name="enable_data_mapping" default="true"/>
   <include if="$(arg enable_data_mapping)" file="$(find spikive_control_sdk)/launch/data_mapping.launch">
     <arg name="drone_id" value="$(arg drone_id)"/>
