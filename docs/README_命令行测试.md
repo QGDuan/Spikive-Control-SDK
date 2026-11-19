@@ -127,16 +127,22 @@ rostopic echo /nav/map/record/feedback
 rostopic echo /nav/map/record/result
 ```
 
-启动采集（要求 SLAM save_result 已运行）：
+SDK 独立录包，开始命令直接给出话题列表（按需替换 `topics`）：
 
 ```bash
-rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal '{goal: {cmd: 1, bag_path: /home/colman/data, bag_name: record_test, timeout: 10}}'
+rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal "{goal_id: {id: 'record-start-$(date +%s%N)'}, goal: {cmd: 1, bag_path: '/home/colman/data', bag_name: 'record_test', topics: ['/nav/data/odom', '/nav/status/flight_state', '/mavros/state'], timeout: 10}}"
 ```
 
-收到 success 后采集继续。完成采集后明确发送停止：
+收到 success 后录制继续。停止并保存（路径和列表沿用开始请求）：
 
 ```bash
-rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal '{goal: {cmd: 2, bag_path: "", bag_name: "", timeout: 120}}'
+rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal "{goal_id: {id: 'record-stop-$(date +%s%N)'}, goal: {cmd: 2, timeout: 120}}"
 ```
 
-停止成功后得到 `/home/colman/data/record_test.bag`，可用 `rosbag info /home/colman/data/record_test.bag` 检查。再次采集请换 bag_name；同名文件不会覆盖。采集取消或超时不自动停止 SLAM，仍需 cmd=2。此接口产出 bag，不能直接交给 LoadMap；PCD 后处理属于二阶段第 4 项。
+停止成功后检查实际收到的录制话题及消息数：
+
+```bash
+rosbag info /home/colman/data/record_test.bag
+```
+
+再次录制请换 `bag_name`；同名文件不覆盖。空 topics 拒绝，不隐式全录；所选话题可稍后上线，没有消息的话题不会列在 bag 中。取消/超时只结束命令跟踪，仍需 cmd=2 停止录制；已请求的停止继续完成。此接口产出 bag，不能直接交给 LoadMap。完整说明见 [独立录包](README_录包.md)。

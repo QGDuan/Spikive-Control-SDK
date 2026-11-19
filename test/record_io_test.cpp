@@ -23,40 +23,39 @@ TEST_F(RecordIO, DestinationRejectsPathsExtensionsAndOverwrite)
   EXPECT_THROW(recordingDestination(root.string(), "name.bag"), std::invalid_argument);
   bag("existing.bag");
   EXPECT_THROW(recordingDestination(root.string(), "existing"), std::invalid_argument);
+  fs::create_symlink(root/"missing", root/"symlink.bag");
+  EXPECT_THROW(recordingDestination(root.string(), "symlink"), std::invalid_argument);
   EXPECT_EQ(recordingDestination((root/"sub").string(), "valid"), (root/"sub/valid.bag").string());
 }
-TEST_F(RecordIO, ExportPreservesSourceAndNeverOverwrites)
+TEST_F(RecordIO, AtomicPublishNeverOverwritesIncludingConcurrentDestination)
 {
   const auto source = bag("source.bag");
   const auto target = recordingDestination(root.string(), "target");
-  std::atomic_bool cancelled(false);
-  EXPECT_NO_THROW(exportRecordedBag(source, target, cancelled));
+  EXPECT_NO_THROW(publishRecordedBag(source, target));
   EXPECT_TRUE(fs::exists(source));
   EXPECT_EQ(fs::file_size(source), fs::file_size(target));
-  EXPECT_THROW(exportRecordedBag(source, target, cancelled), std::runtime_error);
+  EXPECT_THROW(publishRecordedBag(source, target), std::runtime_error);
+  const auto collision = recordingDestination(root.string(), "race");
+  std::ofstream(collision) << "another writer";
+  EXPECT_THROW(publishRecordedBag(source, collision), std::runtime_error);
+  std::ifstream in(collision); std::string content; std::getline(in, content);
+  EXPECT_EQ(content, "another writer");
 }
-TEST_F(RecordIO, CancelAndInvalidSourceLeaveNoPartialFile)
+TEST_F(RecordIO, InvalidOrActiveSourceLeavesNoOutput)
 {
   const auto target = recordingDestination(root.string(), "target");
-  const auto source = bag("source.bag");
-  std::atomic_bool cancelled(true);
-  EXPECT_THROW(exportRecordedBag(source, target, cancelled), std::runtime_error);
-  EXPECT_FALSE(fs::exists(target));
-  cancelled = false;
-  EXPECT_THROW(exportRecordedBag(bag("open.active.bag"), target, cancelled), std::runtime_error);
+  EXPECT_THROW(publishRecordedBag(bag("record.bag.active"), target), std::runtime_error);
   std::ofstream((root/"bad.bag").string()) << "invalid";
-  EXPECT_THROW(exportRecordedBag((root/"bad.bag").string(), target, cancelled), std::runtime_error);
+  EXPECT_THROW(publishRecordedBag((root/"bad.bag").string(), target), std::runtime_error);
   EXPECT_FALSE(fs::exists(target));
 }
-TEST(RecordProtocol, JsonSchemaDroneAndStateAreValidated)
+TEST(RecordTopics, OnlyExplicitUniqueAbsoluteTopics)
 {
-  const auto payload = recordCommand("a\"b");
-  EXPECT_NE(payload.find("\"schema_version\":1"), std::string::npos);
-  const std::string status = R"({"schema_version":1,"request_id":"r1","drone_id":"2","phase":"record_start","ok":true,"state":"recording","bag_path":"/tmp/x.bag","error":null})";
-  const auto parsed = parseRecordStatus(status, 2);
-  EXPECT_EQ(parsed.request_id, "r1"); EXPECT_TRUE(parsed.ok);
-  EXPECT_THROW(parseRecordStatus(status, 1), std::invalid_argument);
-  EXPECT_THROW(parseRecordStatus("{}", 2), std::exception);
+  EXPECT_NO_THROW(validateRecordingTopics({"/nav/data/odom", "/livox/imu"}));
+  for (const auto& topics : std::vector<std::vector<std::string>>{
+       {}, {""}, {"relative"}, {"/"}, {"/a", "/a"}, {"/a//b"}, {"/a/"},
+       {"/foo.*"}, {"-a"}, {"/a:=/b"}, {"/a;touch /tmp/file"}, {std::string("/a\0b", 4)}})
+    EXPECT_THROW(validateRecordingTopics(topics), std::invalid_argument);
 }
 TEST(Deadline, DisabledInvalidAndSteadyExpiry)
 {

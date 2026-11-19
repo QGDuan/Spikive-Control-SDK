@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0.2)
 project(spikive_control_sdk)
 
 find_package(catkin REQUIRED COMPONENTS actionlib actionlib_msgs controller_msgs geometry_msgs
-  mavros_msgs message_generation nav_msgs quadrotor_msgs pcl_conversions sensor_msgs roscpp std_msgs)
+  mavros_msgs message_generation nav_msgs quadrotor_msgs pcl_conversions sensor_msgs rosbag roscpp std_msgs)
 find_package(PCL REQUIRED COMPONENTS io)
 find_package(OpenSSL REQUIRED)
 find_package(Boost REQUIRED COMPONENTS filesystem system)
@@ -15,7 +15,7 @@ generate_messages(DEPENDENCIES actionlib_msgs std_msgs geometry_msgs)
 catkin_package(INCLUDE_DIRS include
   LIBRARIES ${PROJECT_NAME} spikive_localization_sdk spikive_record_io
   CATKIN_DEPENDS actionlib actionlib_msgs controller_msgs mavros_msgs message_runtime nav_msgs
-                 quadrotor_msgs roscpp std_msgs geometry_msgs sensor_msgs pcl_conversions)
+                 quadrotor_msgs rosbag roscpp std_msgs geometry_msgs sensor_msgs pcl_conversions)
 
 function(sdk_target target)
   target_compile_features(${target} PUBLIC cxx_std_14)
@@ -73,6 +73,8 @@ if(CATKIN_ENABLE_TESTING)
   endif()
   catkin_install_python(PROGRAMS test/sdk_integration_test.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
   catkin_install_python(PROGRAMS test/data_mapping_test.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+  catkin_install_python(PROGRAMS test/recording_test.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
   add_rostest(test/sdk_integration.test)
   add_rostest(test/data_mapping.test)
+  add_rostest(test/recording.test)
 endif()

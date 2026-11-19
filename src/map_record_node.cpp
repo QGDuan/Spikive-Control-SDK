@@ -2,194 +2,259 @@
 #include <spikive_control_sdk/action_support.h>
 #include <spikive_control_sdk/record_io.h>
 #include <actionlib/server/action_server.h>
+#include <boost/filesystem.hpp>
+#include <rosbag/recorder.h>
 #include <std_msgs/String.h>
-#include <future>
+#include <cerrno>
+#include <csignal>
+#include <cstring>
 #include <memory>
+#include <spawn.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+extern char** environ;
 
 namespace spikive_control_sdk
 {
-// SLAM save_result 的命令/状态适配。保存路径只影响 SDK 导出，不写 SLAM 参数。
+// 使用 rosbag record 的原生 Recorder。独立子进程使 SIGINT 只结束这次录制，
+// 不影响 SDK/SLAM/Planner；posix_spawn 直接传 argv，不执行 shell。
+int recordWorker(int argc, char** argv)
+{
+  if (argc < 6) return 1;
+  const auto parent = static_cast<pid_t>(std::stol(argv[2]));
+  if (::prctl(PR_SET_PDEATHSIG, SIGINT) != 0 || ::getppid() != parent) return 1;
+  ros::M_string remappings;
+  remappings["begin_write"] = argv[4];
+  ros::init(remappings, "spikive_bag_" + std::to_string(::getpid()));
+  rosbag::RecorderOptions options;
+  options.prefix = argv[3];
+  options.append_date = false;
+  options.publish = true;
+  options.topics.assign(argv + 5, argv + argc);
+  return rosbag::Recorder(options).run();
+}
+
 class MapRecordNode
 {
   using Server = actionlib::ActionServer<RecordAction>;
   using Handle = Server::GoalHandle;
 public:
-  MapRecordNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
+  MapRecordNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh), pnh_(pnh)
   {
-    pnh.param("drone_id", drone_id_, 1);
-    if (drone_id_ < 0 || drone_id_ > 32767) throw std::invalid_argument("drone_id out of range");
-    const std::string prefix = "/drone_" + std::to_string(drone_id_) + "_bag_record_";
-    std::string start, stop, status, action;
-    pnh.param<std::string>("record/start_topic", start, "");
-    pnh.param<std::string>("record/stop_topic", stop, "");
-    pnh.param<std::string>("record/status_topic", status, "");
+    std::string action;
     pnh.param<std::string>("record/action", action, "/nav/map/record");
-    if (start.empty()) start = prefix + "start";
-    if (stop.empty()) stop = prefix + "stop";
-    if (status.empty()) status = prefix + "status";
-    if (action.empty() || nh.resolveName(start) == nh.resolveName(stop) ||
-        nh.resolveName(start) == nh.resolveName(status) || nh.resolveName(stop) == nh.resolveName(status))
-      throw std::invalid_argument("Recording topics must be distinct and action nonempty");
-    start_pub_ = nh.advertise<std_msgs::String>(start, 10, false);
-    stop_pub_ = nh.advertise<std_msgs::String>(stop, 10, false);
-    status_sub_ = nh.subscribe(status, 20, &MapRecordNode::onStatus, this);
+    if (action.empty()) throw std::invalid_argument("Record action must not be empty");
     server_.reset(new Server(nh, action, [this](Handle h) { onGoal(h); },
                             [this](Handle h) { onCancel(h); }, false));
     timer_ = nh.createWallTimer(ros::WallDuration(0.05), &MapRecordNode::onTimer, this);
     server_->start();
-    ROS_INFO_STREAM("Map recording adapter: " << action << " -> " << start << " / " << stop << "; " << status);
+    ROS_INFO_STREAM("SDK rosbag recorder: " << action << "; cmd=1 requires explicit topics; cmd=2 closes the bag");
   }
+
   ~MapRecordNode()
   {
-    if (cancel_export_) *cancel_export_ = true;
-    // future 析构等待文件线程结束；不自动停止后端采集。
+    // 正常关闭时保存自身录制；从不向外部 rosbag/SLAM 节点发信号。
+    active_ = false;
+    if (pid_ > 0)
+    {
+      stopping_ = true;
+      ::kill(pid_, SIGINT);
+      const auto until = ros::SteadyTime::now() + ros::WallDuration(5);
+      while (pid_ > 0 && ros::SteadyTime::now() < until)
+      { pollChild(); if (pid_ > 0) ros::WallDuration(0.05).sleep(); }
+      if (pid_ > 0)
+      {
+        ::kill(pid_, SIGKILL);
+        int status;
+        while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {}
+        ROS_ERROR_STREAM("Recorder did not close on shutdown; partial data retained: " << staging_);
+      }
+    }
   }
+
 private:
   void reject(Handle h, ErrorCode code, const std::string& text)
   { h.setRejected(makeResult<RecordResult>(false, code, text), text); }
 
+  void startWorker(const RecordGoal& req)
+  {
+    // mkdtemp 创建私有目录，避免录制期间覆盖既有文件或另一进程的输出。
+    std::string pattern = (boost::filesystem::path(destination_).parent_path() / ".spikive-record-XXXXXX").string();
+    std::vector<char> buffer(pattern.begin(), pattern.end()); buffer.push_back('\0');
+    if (!::mkdtemp(buffer.data())) throw std::runtime_error("Cannot create recording directory: " + std::string(std::strerror(errno)));
+    staging_ = buffer.data();
+    source_ = staging_ + "/record.bag";
+    const auto ready_topic = pnh_.resolveName("begin_write_" + std::to_string(++sequence_));
+    ready_sub_ = nh_.subscribe(ready_topic, 1, &MapRecordNode::onReady, this);
+    std::vector<std::string> args = {"spikive_map_record_node", "--record-worker", std::to_string(::getpid()), source_, ready_topic};
+    args.insert(args.end(), req.topics.begin(), req.topics.end());
+    std::vector<char*> argv;
+    for (auto& arg : args) argv.push_back(&arg[0]);
+    argv.push_back(nullptr);
+    // /proc/self/exe 在 devel/install/可重定位安装包中均指向当前 SDK 可执行文件。
+    const int error = ::posix_spawn(&pid_, "/proc/self/exe", nullptr, nullptr, argv.data(), environ);
+    if (error != 0)
+    {
+      pid_ = -1;
+      ready_sub_.shutdown();
+      boost::filesystem::remove(staging_);
+      throw std::runtime_error("Cannot start rosbag recorder: " + std::string(std::strerror(error)));
+    }
+    ready_ = stopping_ = false;
+    last_error_.clear();
+    ROS_INFO_STREAM("Recording PID " << pid_ << " -> " << destination_);
+    for (const auto& topic : req.topics) ROS_INFO_STREAM("  record topic: " << topic);
+  }
+
   void onGoal(Handle h)
   {
+    pollChild();
     const auto req = h.getGoal();
-    if (active_ || export_.valid()) { reject(h, ERR_BUSY, "A record command or file export is active"); return; }
+    if (active_) { reject(h, ERR_BUSY, "A record command is active"); return; }
     if ((req->cmd != 1 && req->cmd != 2) || !TaskDeadline::valid(req->timeout))
     { reject(h, ERR_PARAM_INVALID, "cmd must be 1/2 and timeout finite/nonnegative"); return; }
-    const auto& publisher = req->cmd == 1 ? start_pub_ : stop_pub_;
-    if (!ros::Time::isValid() || !publisher.getNumSubscribers() || !status_sub_.getNumPublishers())
-    { reject(h, ERR_PRECHECK_FAILED, "Require SLAM recorder subscriber/status publisher and valid ROS time"); return; }
-    if (req->cmd == 1 && (!known_ || recording_ || awaiting_ack_))
-    { reject(h, recording_ || awaiting_ack_ ? ERR_BUSY : ERR_PRECHECK_FAILED, "Require confirmed idle recorder before start"); return; }
-    if (req->cmd == 2 && !recording_ && !awaiting_ack_ && closed_path_.empty())
-    { reject(h, ERR_PRECHECK_FAILED, "No active recording or confirmed closed bag to export"); return; }
-    std::string target = destination_;
-    try
+    if (req->cmd == 1)
     {
-      if (req->cmd == 1 || !req->bag_path.empty() || !req->bag_name.empty())
-        target = recordingDestination(req->bag_path, req->bag_name);
-      if (target.empty()) throw std::invalid_argument("Provide bag_path and bag_name to recover a recording started outside this SDK");
+      if (pid_ > 0) { reject(h, ERR_BUSY, "SDK recording is already active; stop with cmd=2 first"); return; }
+      if (!ros::Time::isValid()) { reject(h, ERR_PRECHECK_FAILED, "Require valid ROS time"); return; }
+      try
+      {
+        validateRecordingTopics(req->topics);
+        destination_ = recordingDestination(req->bag_path, req->bag_name);
+      }
+      catch (const std::exception& e) { reject(h, ERR_PARAM_INVALID, e.what()); return; }
+      try { startWorker(*req); }
+      catch (const std::exception& e) { reject(h, ERR_INTERNAL, e.what()); return; }
     }
-    catch (const std::exception& e) { reject(h, ERR_PARAM_INVALID, e.what()); return; }
+    else
+    {
+      if (!req->topics.empty() || !req->bag_path.empty() || !req->bag_name.empty())
+      { reject(h, ERR_PARAM_INVALID, "cmd=2 uses the current session; leave topics/bag_path/bag_name empty"); return; }
+      if (pid_ <= 0)
+      {
+        reject(h, last_error_.empty() ? ERR_PRECHECK_FAILED : ERR_INTERNAL,
+               last_error_.empty() ? "No SDK recording to stop" : last_error_);
+        return;
+      }
+      // 启动命令已取消/超时时也允许停止。先等子进程安装 SIGINT 处理器并打开文件。
+      stopping_ = true;
+      if (ready_) ::kill(pid_, SIGINT);
+    }
     goal_ = h;
-    destination_ = target;
     command_ = req->cmd;
     active_ = true;
     deadline_.start(req->timeout);
-    goal_.setAccepted(req->cmd == 1 ? "Starting backend bag recording" : "Stopping backend recording and exporting bag");
-    feedback_.state = recording_ ? 1 : 0;
-    goal_.publishFeedback(feedback_);
-    if (req->cmd == 2 && !recording_ && !closed_path_.empty() && !awaiting_ack_)
-    { startExport(); return; }
-    request_id_ = "sdk_record_" + std::to_string(::getpid()) + "_" +
-                  std::to_string(ros::SteadyTime::now().toNSec()) + "_" + std::to_string(++sequence_);
-    if (req->cmd == 1) closed_path_.clear();
-    awaiting_ack_ = true;
-    std_msgs::String command;
-    command.data = recordCommand(request_id_);
-    publisher.publish(command);
+    goal_.setAccepted(req->cmd == 1 ? "Starting SDK rosbag recording" : "Closing SDK rosbag recording");
+    publishFeedback();
   }
 
-  void onStatus(const std_msgs::String::ConstPtr& msg)
+  void onReady(const std_msgs::String::ConstPtr& msg)
   {
-    RecordStatus status;
-    try { status = parseRecordStatus(msg->data, drone_id_); }
-    catch (const std::exception& e) { ROS_WARN_STREAM_THROTTLE(5, "Ignored recorder status: " << e.what()); return; }
-    known_ = true;
-    recording_ = status.state == "recording";
-    if (!awaiting_ack_ || status.request_id != request_id_ ||
-        status.phase != (command_ == 1 ? "record_start" : "record_stop")) return;
-    awaiting_ack_ = false;
-    if (!status.ok || (command_ == 1 && !recording_) || (command_ == 2 && recording_))
-    {
-      if (active_) finish(false, ERR_INTERNAL, status.error);
-      return;
-    }
-    if (command_ == 2) closed_path_ = status.bag_path;
-    if (expire() || !active_) return;  // 晚到 ACK 可恢复后端状态，但不恢复已结束的 Action。
-    if (command_ == 1)
-    {
-      feedback_.state = 1;
-      finish(true, OK, "Recording started; stop with cmd=2 to save " + destination_);
-    }
-    else startExport();
+    // 原生 Recorder 发布的是本次暂存文件名；旧会话回调不能确认新任务。
+    if (pid_ <= 0 || msg->data != source_ || ready_) return;
+    pollChild();
+    if (pid_ <= 0) return;
+    ready_ = true;
+    if (stopping_) ::kill(pid_, SIGINT);
+    expire();
+    if (active_ && command_ == 1) finish(true, OK, "Recording started; cmd=2 saves " + destination_);
   }
 
-  void startExport()
+  void pollChild()
   {
-    const auto source = closed_path_, target = destination_;
-    cancel_export_ = std::make_shared<std::atomic_bool>(false);
-    const auto cancelled = cancel_export_;
-    export_ = std::async(std::launch::async, [source, target, cancelled]()
+    if (pid_ <= 0) return;
+    int status = 0;
+    const auto waited = ::waitpid(pid_, &status, WNOHANG);
+    if (waited == 0 || (waited < 0 && errno == EINTR)) return;
+    pid_ = -1;
+    ready_sub_.shutdown();
+    last_error_.clear();
+    if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+      last_error_ = "Recorder exited abnormally; data retained: " + staging_;
+    else
     {
-      try { exportRecordedBag(source, target, *cancelled); return std::string(); }
-      catch (const std::exception& e) { return std::string(e.what()) + "; source retained: " + source; }
-    });
+      try
+      {
+        publishRecordedBag(source_, destination_);
+        boost::system::error_code ignored;
+        boost::filesystem::remove(source_, ignored);
+        boost::filesystem::remove(staging_, ignored);
+        ROS_INFO_STREAM("Bag saved: " << destination_);
+        if (!stopping_) last_error_ = "Recorder exited without an SDK stop; bag saved: " + destination_;
+      }
+      catch (const std::exception& e) { last_error_ = std::string(e.what()) + "; data retained: " + staging_; }
+    }
+    if (!last_error_.empty()) ROS_ERROR_STREAM(last_error_);
+    expire();
+    if (active_) finish(last_error_.empty(), last_error_.empty() ? OK : ERR_INTERNAL,
+                        last_error_.empty() ? "Bag saved: " + destination_ : last_error_);
+  }
+
+  void publishFeedback()
+  {
+    RecordFeedback feedback;
+    feedback.state = ready_ ? 1 : 0;
+    goal_.publishFeedback(feedback);
   }
 
   void finish(bool success, ErrorCode code, const std::string& text)
   {
-    feedback_.state = success ? (command_ == 1 ? 1 : 3) : 4;
-    goal_.publishFeedback(feedback_);
+    RecordFeedback feedback;
+    feedback.state = success ? (command_ == 1 ? 1 : 3) : 4;
+    goal_.publishFeedback(feedback);
     const auto result = makeResult<RecordResult>(success, code, text);
     if (success) goal_.setSucceeded(result); else goal_.setAborted(result);
     active_ = false;
   }
 
-  bool expire()
+  void expire()
   {
-    if (!active_ || !deadline_.expired()) return false;
-    if (cancel_export_) *cancel_export_ = true;
-    finish(false, ERR_TIMEOUT, "Record command deadline exceeded; backend recording is unchanged; cmd=2 stops it explicitly");
-    return true;
+    if (active_ && deadline_.expired())
+      finish(false, ERR_TIMEOUT, "Record command timed out; use cmd=2 to stop a running recording; a stop already requested continues");
   }
 
   void onCancel(Handle h)
   {
     if (!active_ || h != goal_) return;
-    if (cancel_export_) *cancel_export_ = true;
     goal_.setCanceled(makeResult<RecordResult>(false, ERR_CANCELLED,
-      "Tracking/export cancelled; backend recording is unchanged; use cmd=2 to stop"));
+      "Tracking cancelled; use cmd=2 to stop a running recording; a stop already requested continues"));
     active_ = false;
   }
 
   void onTimer(const ros::WallTimerEvent&)
   {
     expire();
-    if (export_.valid() && export_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-    {
-      const auto error = export_.get();
-      if (active_)
-      {
-        if (error.empty()) finish(true, OK, "Bag saved: " + destination_);
-        else finish(false, ERR_INTERNAL, error);
-      }
-      // 保留 closed_path_，允许失败后 cmd=2 换路径重试导出。
-    }
-    if (active_) goal_.publishFeedback(feedback_);
+    pollChild();
+    if (active_) publishFeedback();
   }
 
-  int drone_id_{1};
-  bool known_{false}, recording_{false}, active_{false}, awaiting_ack_{false};
+  ros::NodeHandle nh_, pnh_;
+  pid_t pid_{-1};
+  bool ready_{false}, stopping_{false}, active_{false};
   unsigned command_{0};
   std::uint64_t sequence_{0};
-  std::string request_id_, destination_, closed_path_;
+  std::string destination_, staging_, source_, last_error_;
   TaskDeadline deadline_;
-  ros::Publisher start_pub_, stop_pub_;
-  ros::Subscriber status_sub_;
+  ros::Subscriber ready_sub_;
   ros::WallTimer timer_;
   std::unique_ptr<Server> server_;
   Handle goal_;
-  RecordFeedback feedback_;
-  std::shared_ptr<std::atomic_bool> cancel_export_;
-  std::future<std::string> export_;
 };
 }  // namespace spikive_control_sdk
 
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "spikive_map_record_node");
-  ros::NodeHandle nh, pnh("~");
-  try { spikive_control_sdk::MapRecordNode node(nh, pnh); ros::spin(); }
+  try
+  {
+    if (argc > 1 && std::string(argv[1]) == "--record-worker")
+      return spikive_control_sdk::recordWorker(argc, argv);
+    ros::init(argc, argv, "spikive_map_record_node");
+    ros::NodeHandle nh, pnh("~");
+    spikive_control_sdk::MapRecordNode node(nh, pnh);
+    ros::spin();
+  }
   catch (const std::exception& e) { ROS_FATAL_STREAM(e.what()); return 1; }
   return 0;
 }

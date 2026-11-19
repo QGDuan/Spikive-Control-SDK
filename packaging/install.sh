@@ -23,4 +23,4 @@ export CMAKE_PREFIX_PATH=/opt/ros/noetic
 cd "$sdk_release_root"
 catkin_make -DCMAKE_BUILD_TYPE=Release -DCATKIN_ENABLE_TESTING=OFF \
   -j"$sdk_build_jobs" -l"$sdk_build_jobs"
-printf '\nSDK v1.5.0 构建完成。每个使用终端执行：\nsource %q\n' "$sdk_release_root/devel/setup.bash"
+printf '\nSDK 构建完成。每个使用终端执行：\nsource %q\n' "$sdk_release_root/devel/setup.bash"

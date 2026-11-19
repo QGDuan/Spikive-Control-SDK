@@ -59,7 +59,9 @@ Emergency 准入：连接有效、MAVROS IN_AIR、有效导航位置，并已观
 
 优先处理起降过渡态；本节点活动任务使用其实际跟踪阶段，避免旧 reached 覆盖新的 Goto 距离判据。原枚举无 UNKNOWN，缺连接/基础状态时停止发布，不伪造 IDLE。Header.stamp 保留所用控制器/ExtendedState 中较早的采样时间；2 Hz 是快照频率，不表示两路数据每次都更新。没有新增数据年龄策略；消费者可检查源时间。订阅已开始的外部任务，仍受非 latched 命令不可追溯的限制。
 
-## 4. 采集命令和保存行为
+## 4. 采集命令和保存行为（V1.4 历史）
+
+> 以下为 V1.4 的旧实现。1.6.0 已按新要求取消 SLAM 录包后端依赖，改为 SDK 原生 Recorder 和请求 topics 列表；当前命令与行为以 [独立录包](README_录包.md) 为准。
 
 Record 的两个 Goal 是独立命令：cmd=1 在收到本次启动确认后返回 success、feedback=1 RECORDING，采集继续；cmd=2 在停止确认和保存完成后返回 success、feedback=3 COMPLETED。失败 feedback=4。timeout 控制本次命令确认/导出耗时，不是总采集时长。
 

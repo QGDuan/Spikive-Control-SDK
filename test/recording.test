@@ -1,0 +1,6 @@
+<launch>
+  <!-- 独立 master，仅 SDK + ROS 原生 recorder；不启动任何 SLAM/Planner/MAVROS 后端。 -->
+  <param name="use_sim_time" value="false"/>
+  <include file="$(find spikive_control_sdk)/launch/map_record.launch"/>
+  <test test-name="sdk_recording" pkg="spikive_control_sdk" type="recording_test.py" time-limit="100"/>
+</launch>

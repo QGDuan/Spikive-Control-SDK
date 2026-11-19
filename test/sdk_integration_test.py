@@ -12,7 +12,6 @@ import time
 import unittest
 
 import actionlib
-import rosbag
 import rospy
 import rostest
 from actionlib_msgs.msg import GoalStatus
@@ -24,7 +23,7 @@ from quadrotor_msgs.msg import GoalSet, PositionCommand
 from sensor_msgs.msg import PointCloud2, PointField
 from std_msgs.msg import String, Float64
 from spikive_control_sdk.msg import (takeoffAction, takeoffGoal, landAction, landGoal,
-    gotoAction, gotoGoal, return_homeAction, return_homeGoal, RecordAction, RecordGoal,
+    gotoAction, gotoGoal, return_homeAction, return_homeGoal,
     relocalizeAction, relocalizeGoal, FlightState, takeoffActionFeedback, landActionFeedback,
     gotoActionFeedback, return_homeActionFeedback)
 from spikive_control_sdk.srv import EmergencyCmd, LoadMap
@@ -61,25 +60,19 @@ class Backend:
             ('control', '/control', cmd), ('goal', '/goal_with_id', GoalSet),
             ('map', '/map', PointCloud2), ('diff', '/drone_42_diff_odom', Odometry)]:
             self.publishers[key] = rospy.Publisher(topic, cls, queue_size=10)
-        self.status = rospy.Publisher('/drone_42_bag_record_status', String, queue_size=10, latch=True)
         self.match = rospy.Publisher('/drone_42_localization_match_status', String, queue_size=10, latch=True)
-        self.bag, self.recording, self.drop_ack = None, False, False
-        self.record_requests = []
         self.subs = [
             rospy.Subscriber('/control', cmd, self.on_control),
             rospy.Subscriber('/goal_with_id', GoalSet, lambda m: self.goals.append(m)),
             rospy.Subscriber('/nav/status/flight_state', FlightState, lambda m: self.flight_states.append(m)),
             rospy.Subscriber('/nav/data/odom', Odometry, lambda m: self.odom_out.append(m)),
             rospy.Subscriber('/nav/data/pointcloud', PointCloud2, lambda m: self.cloud_out.append(m)),
-            rospy.Subscriber('/drone_42_bag_record_start', String, self.record_start),
-            rospy.Subscriber('/drone_42_bag_record_stop', String, self.record_stop),
             rospy.Subscriber('/drone_42_localization_pcl', PointCloud2, self.on_map),
             rospy.Subscriber('/drone_42_initialpose', PoseWithCovarianceStamped, self.on_initial)]
         for name, typ in [('takeoff', takeoffActionFeedback), ('land', landActionFeedback),
                           ('goto', gotoActionFeedback), ('return_home', return_homeActionFeedback)]:
             self.subs.append(rospy.Subscriber('/nav/flight/' + name + '/feedback', typ,
                 lambda m, key=name: self.feedbacks[key].append(m.feedback)))
-        self.publish_record('', 'status')
         self.publish_match('idle')
         self.timer = rospy.Timer(rospy.Duration(.02), self.tick)
 
@@ -111,28 +104,6 @@ class Backend:
                 self.publishers['goal'].publish(GoalSet(drone_id=42, goal=[9, 8, 2]))
             threading.Thread(target=publish, daemon=True).start()
 
-    def publish_record(self, request_id, phase):
-        self.status.publish(String(json.dumps(dict(schema_version=1, request_id=request_id, drone_id='42',
-            phase=phase, ok=True, state='recording' if self.recording else 'idle',
-            bag_path=getattr(self, 'source', ''), error=None))))
-
-    def record_start(self, message):
-        request = json.loads(message.data); assert type(request['schema_version']) is int
-        self.record_requests.append(('start', request['request_id']))
-        self.source = os.path.join(self.root, request['request_id'] + '.bag')
-        self.bag = rosbag.Bag(self.source + '.active.bag', 'w')
-        self.bag.write('/Odometry_trans', Odometry(), rospy.Time.now())
-        self.recording = True
-        if not self.drop_ack: self.publish_record(request['request_id'], 'record_start')
-
-    def record_stop(self, message):
-        request = json.loads(message.data); self.record_requests.append(('stop', request['request_id']))
-        if self.bag:
-            self.bag.close(); self.bag = None
-            os.rename(self.source + '.active.bag', self.source)
-        self.recording = False
-        if not self.drop_ack: self.publish_record(request['request_id'], 'record_stop')
-
     def publish_match(self, state, fitness=-1., attempts=0):
         self.match.publish(String(json.dumps(dict(schema_version=1, drone_id='42', state=state,
             message=state, fitness_score=fitness, threshold=.3, attempt_count=attempts, elapsed_ms=20))))
@@ -154,7 +125,6 @@ class Backend:
 
     def close(self):
         self.timer.shutdown()
-        if self.bag: self.bag.close()
         shutil.rmtree(self.root)
 
 
@@ -164,8 +134,8 @@ class Integration(unittest.TestCase):
         cls.b = Backend()
         cls.clients = {}
         for name, typ in [('takeoff', takeoffAction), ('land', landAction), ('goto', gotoAction),
-                          ('return_home', return_homeAction), ('record', RecordAction), ('relocalize', relocalizeAction)]:
-            topic = '/nav/map/record' if name == 'record' else '/nav/localization/relocalize' if name == 'relocalize' else '/nav/flight/' + name
+                          ('return_home', return_homeAction), ('relocalize', relocalizeAction)]:
+            topic = '/nav/localization/relocalize' if name == 'relocalize' else '/nav/flight/' + name
             client = actionlib.SimpleActionClient(topic, typ)
             assert client.wait_for_server(rospy.Duration(10)), topic
             cls.clients[name] = client
@@ -318,23 +288,6 @@ class Integration(unittest.TestCase):
         self.b.s.update(ground=1, landed=True)
         self.assertTrue(wait_for(lambda: self.b.flight_states[-1].state == 8))
 
-    def test_06_record_ack_export_and_timeout(self):
-        path = os.path.join(self.b.root, 'output')
-        self.assertTrue(self.result('record', RecordGoal(cmd=1, bag_path=path, bag_name='map', timeout=2)).success)
-        self.assertTrue(self.b.recording)
-        self.result('record', RecordGoal(cmd=1, bag_path=path, bag_name='busy', timeout=2), 21)
-        r = self.result('record', RecordGoal(cmd=2, timeout=2))
-        self.assertTrue(r.success); self.assertTrue(os.path.isfile(os.path.join(path, 'map.bag')))
-        with rosbag.Bag(os.path.join(path, 'map.bag')) as bag: self.assertEqual(bag.get_message_count(), 1)
-        self.assertTrue(os.path.isfile(self.b.source))
-        self.result('record', RecordGoal(cmd=1, bag_path=path, bag_name='map', timeout=2), 19)
-        self.b.drop_ack = True
-        self.result('record', RecordGoal(cmd=1, bag_path=path, bag_name='late', timeout=.15), 2)
-        self.assertTrue(self.b.recording); self.assertEqual(self.b.record_requests[-1][0], 'start')
-        self.b.drop_ack = False
-        self.assertTrue(self.result('record', RecordGoal(cmd=2, timeout=2)).success)
-        self.assertTrue(os.path.isfile(os.path.join(path, 'late.bag')))
-
     def test_07_load_map_and_one_time_matching(self):
         path = os.path.join(self.b.root, 'map.pcd')
         with open(path, 'w') as out:
@@ -347,23 +300,6 @@ class Integration(unittest.TestCase):
         self.assertEqual((r.match_transform.header.frame_id, r.match_transform.child_frame_id), ('map', 'world'))
         time.sleep(.3); self.assertEqual(len(self.b.initials), n + 1)
         self.assertEqual(self.b.initials[-1].pose.pose.position.x, 3)
-
-    def test_08_record_wrong_ack_cancel_and_late_ack(self):
-        path = os.path.join(self.b.root, 'output')
-        self.b.drop_ack = True
-        c = self.clients['record']; n = len(self.b.record_requests)
-        c.send_goal(RecordGoal(cmd=1, bag_path=path, bag_name='cancelled', timeout=3))
-        self.assertTrue(wait_for(lambda: len(self.b.record_requests) > n))
-        own_id = self.b.record_requests[-1][1]
-        self.b.publish_record('wrong_request', 'record_start'); time.sleep(.1)
-        self.assertIsNone(c.get_result())
-        c.cancel_goal(); self.assertTrue(c.wait_for_result(rospy.Duration(2)))
-        self.assertEqual(c.get_result().error_code, 3)
-        self.assertTrue(self.b.recording); self.assertEqual(self.b.record_requests[-1][0], 'start')
-        self.b.publish_record(own_id, 'record_start'); time.sleep(.1)
-        self.assertEqual(c.get_result().error_code, 3)
-        self.b.drop_ack = False
-        self.assertTrue(self.result('record', RecordGoal(cmd=2, timeout=2)).success)
 
     def test_09_busy_task_and_cached_takeoff_success(self):
         c = self.clients['takeoff']; c.send_goal(takeoffGoal(timeout=3))

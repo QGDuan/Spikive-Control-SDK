@@ -48,12 +48,9 @@ localization:
 services:
   emergency: /nav/safety/emergency
 
-# SLAM save_result 已有 JSON 协议；空值按 drone_id 生成。
+# SDK 独立录包；每次开始的 topics 由 Record Goal 指定，不按 drone_id 推断。
 record:
   action: /nav/map/record
-  start_topic: ""
-  stop_topic: ""
-  status_topic: ""
 
 # 只映射 topic，所有消息内容和采样时间原样保留。
 data:
