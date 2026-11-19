@@ -3,6 +3,7 @@
 | 版本 | 日期 | 变更 |
 | --- | --- | --- |
 | V1.0 | 2026-11-19 | SDK 录包、分段合并、目录配置和 PCD 导出 |
+| V1.1 | 2026-11-20 | 补充基于真实雷达点云的 ROS1 Action 验收流程 |
 
 本文按 V1.4 接口规范的结构组织，字段和默认值以本仓库为准。 [ROS 接口规范 V1.4](specs/ROS接口规范V1.4.pdf)
 
@@ -79,92 +80,101 @@ post_process:
 
 `record.topics` 保存在同一 YAML。要导出 PCD，录包话题中应包含导出所用的 PointCloud2 话题。启用分段后，SDK 在停止录包后合并分段并提交最终文件。
 
-## 5. 无硬件端到端测试
+## 5. 实机接口验收
 
-在同一台 ROS Noetic 主机开两个终端。本示例使用独立 master、本地临时文件和合成点云。
+在雷达和飞控均已通电、已连接的设备上执行。按交付环境的流程启动驱动、SLAM/LIO 和 SDK。验收在地面完成，全部命令通过 SSH 或在机载机本地终端执行。
 
-### 5.1 终端 A 启动录包和导出
+打开三个终端，分别用于**发送指令**、**查看结果**和**查看反馈**。三个终端均执行 `source ~/driver_ws/devel/setup.bash`，并连接同一个机载 ROS master。示例使用 Drone ID 2。如果现场的 ID 或 `post_process.pointcloud_topic` 不同，将示例中的点云话题替换为实际话题。
 
-```bash
-source ~/driver_ws/devel/setup.bash
-export ROS_MASTER_URI=http://127.0.0.1:11419
-test_dir=$(mktemp -d /tmp/spikive-map-demo.XXXXXX)
-cat > "$test_dir/sdk.yaml" <<EOF
-record:
-  output_directory: $test_dir/bags
-  split_enabled: false
-  topics: [/demo/cloud]
-post_process:
-  pointcloud_topic: /demo/cloud
-  output_directory: $test_dir/pcd
-EOF
-roslaunch -p 11419 spikive_control_sdk spikive_control_sdk.launch \
-  drone_id:=2 config_file:="$test_dir/sdk.yaml" \
-  enable_flight:=false enable_localization:=false enable_data_mapping:=false
-```
+### 5.1 确认真实点云和 Action 已就绪
 
-### 5.2 终端 B 录制合成点云并导出
+在指令终端执行以下命令。
 
 ```bash
-source ~/driver_ws/devel/setup.bash
-export ROS_MASTER_URI=http://127.0.0.1:11419
-python3 - <<'PY'
-from pathlib import Path
-from uuid import uuid4
-
-import actionlib
-import rosbag
-import rospy
-from sensor_msgs import point_cloud2
-from sensor_msgs.msg import PointCloud2
-from spikive_control_sdk.msg import PostProcessAction, PostProcessGoal, RecordAction, RecordGoal
-from std_msgs.msg import Header, String
-
-rospy.init_node('spikive_map_demo', anonymous=True)
-directory = Path(rospy.wait_for_message('/nav/map/record/output_directory', String, timeout=10).data)
-stem = 'demo-' + uuid4().hex[:8]
-recorder = actionlib.SimpleActionClient('/nav/map/record', RecordAction)
-exporter = actionlib.SimpleActionClient('/nav/map/post_process', PostProcessAction)
-publisher = rospy.Publisher('/demo/cloud', PointCloud2, queue_size=2)
-for client in (recorder, exporter):
-    assert client.wait_for_server(rospy.Duration(10)), 'Action server unavailable'
-
-def command(client, goal):
-    client.send_goal(goal)
-    assert client.wait_for_result(rospy.Duration(40)), 'Action result timeout'
-    result = client.get_result()
-    assert result is not None and result.success and result.error_code == 0, result
-    print(result.message)
-    return result
-
-command(recorder, RecordGoal(cmd=1, bag_name=stem, timeout=10))
-try:
-    deadline = rospy.Time.now() + rospy.Duration(5)
-    while publisher.get_num_connections() == 0 and rospy.Time.now() < deadline:
-        rospy.sleep(0.05)
-    assert publisher.get_num_connections() > 0, 'Recorder did not subscribe to /demo/cloud'
-    for index in range(10):
-        header = Header(stamp=rospy.Time.now(), frame_id='world')
-        publisher.publish(point_cloud2.create_cloud_xyz32(header, [(float(index), 2.0, 3.0)]))
-        rospy.sleep(0.1)
-finally:
-    command(recorder, RecordGoal(cmd=2, timeout=30))
-
-bag_path = directory / (stem + '.bag')
-with rosbag.Bag(str(bag_path)) as bag:
-    assert bag.get_message_count('/demo/cloud') == 10
-command(exporter, PostProcessGoal(cmd=1, bag_name=stem, timeout=30))
-pcd = directory.parent / 'pcd' / (stem + '.pcd')
-header = pcd.read_bytes().split(b'DATA binary\n', 1)[0].splitlines()
-assert b'POINTS 10' in header, header
-print('Verified', bag_path, 'and', pcd)
-PY
+CLOUD_TOPIC=/drone_2_cloud_registered
+rostopic type "$CLOUD_TOPIC"
+rostopic hz "$CLOUD_TOPIC"
 ```
 
-预期得到一个包含 10 条点云消息的 bag，以及一个包含 10 个点的二进制 PCD。测试结束后在终端 A 按 Ctrl+C。分段及合并、默认目录和常见错误分支还可用仓库的自动测试覆盖。
+类型应为 `sensor_msgs/PointCloud2`，并连续数秒看到 `average rate`。按 Ctrl+C 退出频率监控，然后检查两个 `/goal` 都有 SDK 订阅者，记录 SDK 发布的 bag 保存目录。
 
 ```bash
-cd ~/driver_ws
-catkin_make run_tests_spikive_control_sdk -j2 -l2
-catkin_test_results build/test_results
+rostopic info /nav/map/record/goal
+rostopic info /nav/map/post_process/goal
+rostopic echo -n 1 /nav/map/record/output_directory
 ```
+
+在结果终端运行 `rostopic echo /nav/map/record/result`，在反馈终端运行 `rostopic echo /nav/map/record/feedback`。保持两条命令运行。
+
+### 5.2 开始录制真实点云
+
+继续在指令终端发送开始 Goal。
+
+```bash
+BAG_NAME="record-test-$(date +%Y%m%d-%H%M%S)"
+START_ID="$BAG_NAME-start"
+echo "$START_ID"
+
+rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal \
+  "{goal_id: {id: '$START_ID'}, goal: {cmd: 1, bag_path: '', bag_name: '$BAG_NAME', timeout: 10, topics: ['$CLOUD_TOPIC']}}"
+```
+
+此请求显式录制正在发布的配准点云，`bag_path` 留空使用 SDK 的配置目录。在结果终端找到 `status.goal_id.id` 等于 `START_ID` 的消息。确认 `result.success: true`、`result.error_code: 0` 后，保持雷达和 SLAM/LIO 运行至少 10 秒，再发送停止 Goal。
+
+### 5.3 停止录制并检查 bag
+
+```bash
+STOP_ID="$BAG_NAME-stop"
+echo "$STOP_ID"
+
+rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal \
+  "{goal_id: {id: '$STOP_ID'}, goal: {cmd: 2, timeout: 0}}"
+```
+
+等待 `status.goal_id.id` 等于 `STOP_ID` 的结果。保存成功时 `result.success: true`、`result.error_code: 0`，`result.message` 中的 `Bag saved:` 后面是最终文件的绝对路径。将它填入 `BAG_PATH`。
+
+```bash
+# 示例使用默认目录。若结果返回其他目录，用实际路径替换。
+BAG_PATH="/home/colman/data/$BAG_NAME.bag"
+rosbag info "$BAG_PATH"
+```
+
+通过条件是 `rosbag info` 能读取文件，且 `topics` 列出 `CLOUD_TOPIC`，消息数大于 0。
+
+如需验收分段合并，启用 `record.split_enabled` 并重启录包节点。重新录制，使数据至少生成两个分段。停止后按 `STOP_ID` 查看 `state=2`、`completed_parts` 和 `total_parts`，再用停止结果和 `rosbag info` 确认合并后的最终文件可读。
+
+### 5.4 停止 SLAM/LIO 并导出 PCD
+
+确认录包保存完成后，按现场流程停止 SLAM/LIO，保持机载 ROS master 和 SDK 的 `spikive_post_process_node` 运行。如果现场由 Manager 启动 SLAM/LIO，使用地面站的 Manager 停止按钮。随后核对节点和订阅者。
+
+```bash
+rosnode list | grep -Ex '/laserMapping|/slam_to_uav_transform'
+rostopic info /nav/map/post_process/goal
+```
+
+第一条命令预期没有输出。现场修改过 `post_process.lio_nodes` 时，按实际节点名核对。第二条命令仍应显示后处理节点订阅 `/goal`。
+
+在两个监控终端分别按 Ctrl+C 退出 Record 监控。在结果终端运行 `rostopic echo /nav/map/post_process/result`，在反馈终端运行 `rostopic echo /nav/map/post_process/feedback`。
+
+回到指令终端，发送导出请求。输入使用刚验收的 bag，输出目录由 SDK 配置决定。
+
+```bash
+BAG_DIR=$(dirname "$BAG_PATH")
+EXPORT_ID="$BAG_NAME-pcd"
+echo "$EXPORT_ID"
+
+rostopic pub -1 /nav/map/post_process/goal spikive_control_sdk/PostProcessActionGoal \
+  "{goal_id: {id: '$EXPORT_ID'}, goal: {cmd: 1, map_path: '', map_name: '', timeout: 0, bag_path: '$BAG_DIR', bag_name: '$BAG_NAME'}}"
+```
+
+等待 `status.goal_id.id` 等于 `EXPORT_ID` 的结果。通过时 `result.success: true`、`result.error_code: 0`，`result.message` 给出 PCD 路径、处理的消息数和点数。将它给出的路径填入 `PCD_PATH`。
+
+```bash
+# 示例假定当前用户与 SDK 运行用户相同，且使用默认输出目录。
+PCD_PATH="$HOME/spikive-output/$BAG_NAME.pcd"
+ls -lh "$PCD_PATH"
+LC_ALL=C grep -a -m 1 '^POINTS ' "$PCD_PATH"
+LC_ALL=C grep -a -m 1 '^DATA ' "$PCD_PATH"
+```
+
+通过条件是 PCD 文件存在，头部 `POINTS` 大于 0 且与 Action 结果中的点数一致，`DATA` 为 `binary`。若导出返回 `error_code=12`，检查 LIO 节点是否仍在运行，或 bag 是否已关闭并包含配置的点云消息。
