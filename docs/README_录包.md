@@ -17,6 +17,10 @@ rosmsg show spikive_control_sdk/RecordGoal
 roslaunch spikive_control_sdk map_record.launch
 ```
 
+分段目标大小由 `record.split_size_mib` 配置，默认 500 MiB。Recorder 按原生 rosbag 的尺寸检查切换分段，实际分段大小可能略超阈值。修改后重启录包节点。
+
+合并进度更新了 `RecordFeedback` 的消息定义。更新 SDK 时重新编译使用完整 `RecordAction` 的客户端，并让 Foxglove Bridge 从新工作区加载反馈定义。
+
 ## 命令行
 
 分别开两个监控终端，再发送请求：
@@ -38,7 +42,7 @@ rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal "{goal
 停止并保存：
 
 ```bash
-rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal "{goal_id: {id: 'record-stop-$(date +%s%N)'}, goal: {cmd: 2, timeout: 120}}"
+rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal "{goal_id: {id: 'record-stop-$(date +%s%N)'}, goal: {cmd: 2, timeout: 0}}"
 ```
 
 检查实际录入的话题、类型、消息数：
@@ -59,7 +63,7 @@ rosbag info /home/colman/data/record_test.bag
 | `timeout` | 本次开始/停止命令的期限，秒；0 不限时，不是录包总时长 |
 | 开始成功 | `feedback.state=1`；`result.success=true,error_code=0`，文件已打开，录制继续 |
 | 停止成功 | `feedback.state=3`；`result.success=true,error_code=0`，最终 bag 已关闭并保存，message 给出路径 |
-| 反馈 | 等待打开为 0，录制/等待停止为 1，完成为 3，失败为 4；Action 结束后不持续发布反馈 |
+| 反馈 | 等待打开为 0，录制或关闭为 1，合并为 2，完成为 3，失败为 4。合并时发布 `completed_parts` 和 `total_parts` |
 | 参数错误 / 重复开始 | `error_code=19` / `21`，未提供请求或配置话题时返回 19 |
 | 无任务可停 / ROS 时间无效 | `error_code=12` |
 | 超时 / 取消 | `error_code=2` / `3`；只结束命令跟踪，仍需 cmd=2 停止；已请求的停止继续 |
@@ -78,12 +82,15 @@ flowchart LR
   Stop[cmd=2] --> SDK
   SDK -->|SIGINT| Worker
   Worker -->|关闭文件并退出| SDK
-  SDK --> Bag[原子保存 bag + result]
+  SDK --> Merge[按编号合并分段并发布进度]
+  Merge --> Bag[原子保存 bag + result]
 ```
 
-只管理本 SDK 创建的子进程，不影响外部 `rosbag record`。写入目标目录内私有 `.spikive-record-*/record.bag.active`，正常停止后原子发布为 `bag_path/bag_name.bag`，拒绝覆盖同名文件。保存失败保留私有目录中的文件，不冒充成功，也不自动删除未保存数据。
+录制时使用目标目录下的私有 `.spikive-record-*`，每段名称为 `bag_name_序号.bag`，当前段带 `.active`。停止录制后按编号合并，保留 ROS 消息内容、记录时间戳和连接头。单段直接发布。多段合并需要额外容纳合并文件的磁盘空间，原子发布为 `bag_path/bag_name.bag` 后才清理分段。
 
-SDK 正常退出时尝试停止并保存录制，最多等 5 秒；仍不能关闭则终止自己的子进程并保留暂存数据。强制断电不保证 bag 完整。bag 不等于 PCD 地图，不能直接作为 LoadMap 输入。
+合并失败或中断时，结果或日志给出保留分段的路径。用已有的 `record_bag.py merge PARTS_DIR -o OUTPUT.bag` 离线恢复，`PARTS_DIR` 填日志中的目录，输出填一个新文件名。
+
+SDK 正常退出时尝试停止并保存录制。收尾等待超过 5 秒后会中断合并或终止未关闭的录制进程，保留暂存数据。强制断电时，最后一段可能需要重建索引。
 
 ## 验证
 

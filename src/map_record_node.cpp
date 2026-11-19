@@ -6,8 +6,10 @@
 #include <rosbag/recorder.h>
 #include <std_msgs/String.h>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <spawn.h>
 #include <sys/prctl.h>
@@ -22,7 +24,7 @@ namespace spikive_control_sdk
 // 不影响 SDK/SLAM/Planner；posix_spawn 直接传 argv，不执行 shell。
 int recordWorker(int argc, char** argv)
 {
-  if (argc < 6) return 1;
+  if (argc < 7) return 1;
   const auto parent = static_cast<pid_t>(std::stol(argv[2]));
   if (::prctl(PR_SET_PDEATHSIG, SIGINT) != 0 || ::getppid() != parent) return 1;
   ros::M_string remappings;
@@ -32,7 +34,9 @@ int recordWorker(int argc, char** argv)
   options.prefix = argv[3];
   options.append_date = false;
   options.publish = true;
-  options.topics.assign(argv + 5, argv + argc);
+  options.split = true;
+  options.max_size = std::stoull(argv[5]);
+  options.topics.assign(argv + 6, argv + argc);
   return rosbag::Recorder(options).run();
 }
 
@@ -46,6 +50,10 @@ public:
     std::string action;
     pnh.param<std::string>("record/action", action, "/nav/map/record");
     if (action.empty()) throw std::invalid_argument("Record action must not be empty");
+    int split_size_mib;
+    pnh.param("record/split_size_mib", split_size_mib, 500);
+    if (split_size_mib <= 0) throw std::invalid_argument("record/split_size_mib must be positive");
+    split_size_bytes_ = static_cast<std::uint64_t>(split_size_mib) * 1024 * 1024;
     if (pnh.hasParam("record/topics") && !pnh.getParam("record/topics", default_topics_))
       throw std::invalid_argument("record/topics must be a list of strings");
     if (!default_topics_.empty()) validateRecordingTopics(default_topics_);
@@ -53,18 +61,18 @@ public:
                             [this](Handle h) { onCancel(h); }, false));
     timer_ = nh.createWallTimer(ros::WallDuration(0.05), &MapRecordNode::onTimer, this);
     server_->start();
-    ROS_INFO_STREAM("SDK rosbag recorder: " << action << "; cmd=1 uses configured topics or an explicit override");
+    ROS_INFO_STREAM("SDK rosbag recorder: " << action << "; parts: " << split_size_mib << " MiB");
   }
 
   ~MapRecordNode()
   {
     // 正常关闭时保存自身录制；从不向外部 rosbag/SLAM 节点发信号。
     active_ = false;
+    const auto until = ros::SteadyTime::now() + ros::WallDuration(5);
     if (pid_ > 0)
     {
       stopping_ = true;
       ::kill(pid_, SIGINT);
-      const auto until = ros::SteadyTime::now() + ros::WallDuration(5);
       while (pid_ > 0 && ros::SteadyTime::now() < until)
       { pollChild(); if (pid_ > 0) ros::WallDuration(0.05).sleep(); }
       if (pid_ > 0)
@@ -74,6 +82,17 @@ public:
         while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {}
         ROS_ERROR_STREAM("Recorder did not close on shutdown; partial data retained: " << staging_);
       }
+    }
+    while (merge_.valid() && ros::SteadyTime::now() < until)
+    {
+      pollMerge();
+      if (merge_.valid()) ros::WallDuration(0.05).sleep();
+    }
+    if (merge_.valid())
+    {
+      progress_.cancelled = true;
+      merge_.wait();
+      pollMerge();
     }
   }
 
@@ -88,10 +107,16 @@ private:
     std::vector<char> buffer(pattern.begin(), pattern.end()); buffer.push_back('\0');
     if (!::mkdtemp(buffer.data())) throw std::runtime_error("Cannot create recording directory: " + std::string(std::strerror(errno)));
     staging_ = buffer.data();
-    source_ = staging_ + "/record.bag";
+    const auto prefix = (boost::filesystem::path(staging_) /
+                         boost::filesystem::path(destination_).stem()).string();
+    first_part_ = prefix + "_0.bag";
+    progress_.completed = 0;
+    progress_.total = 0;
+    progress_.cancelled = false;
     const auto ready_topic = pnh_.resolveName("begin_write_" + std::to_string(++sequence_));
     ready_sub_ = nh_.subscribe(ready_topic, 1, &MapRecordNode::onReady, this);
-    std::vector<std::string> args = {"spikive_map_record_node", "--record-worker", std::to_string(::getpid()), source_, ready_topic};
+    std::vector<std::string> args = {"spikive_map_record_node", "--record-worker", std::to_string(::getpid()),
+                                    prefix, ready_topic, std::to_string(split_size_bytes_)};
     args.insert(args.end(), topics.begin(), topics.end());
     std::vector<char*> argv;
     for (auto& arg : args) argv.push_back(&arg[0]);
@@ -114,8 +139,9 @@ private:
   void onGoal(Handle h)
   {
     pollChild();
+    pollMerge();
     const auto req = h.getGoal();
-    if (active_) { reject(h, ERR_BUSY, "A record command is active"); return; }
+    if (active_ || merge_.valid()) { reject(h, ERR_BUSY, "A record command or merge is active"); return; }
     if ((req->cmd != 1 && req->cmd != 2) || !TaskDeadline::valid(req->timeout))
     { reject(h, ERR_PARAM_INVALID, "cmd must be 1/2 and timeout finite/nonnegative"); return; }
     if (req->cmd == 1)
@@ -157,7 +183,7 @@ private:
   void onReady(const std_msgs::String::ConstPtr& msg)
   {
     // 原生 Recorder 发布的是本次暂存文件名；旧会话回调不能确认新任务。
-    if (pid_ <= 0 || msg->data != source_ || ready_) return;
+    if (pid_ <= 0 || msg->data != first_part_ || ready_) return;
     pollChild();
     if (pid_ <= 0) return;
     ready_ = true;
@@ -181,15 +207,32 @@ private:
     {
       try
       {
-        publishRecordedBag(source_, destination_);
-        boost::system::error_code ignored;
-        boost::filesystem::remove(source_, ignored);
-        boost::filesystem::remove(staging_, ignored);
-        ROS_INFO_STREAM("Bag saved: " << destination_);
-        if (!stopping_) last_error_ = "Recorder exited without an SDK stop; bag saved: " + destination_;
+        merge_ = std::async(std::launch::async, [this] {
+          mergeRecordedParts(staging_, destination_, progress_);
+        });
+        return;
       }
       catch (const std::exception& e) { last_error_ = std::string(e.what()) + "; data retained: " + staging_; }
     }
+    finishSave();
+  }
+
+  void pollMerge()
+  {
+    if (!merge_.valid() || merge_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+    if (active_ && command_ == 2) publishFeedback();
+    try
+    {
+      merge_.get();
+      ROS_INFO_STREAM("Bag saved: " << destination_);
+      if (!stopping_) last_error_ = "Recorder exited without an SDK stop; bag saved: " + destination_;
+    }
+    catch (const std::exception& e) { last_error_ = std::string(e.what()) + "; data retained: " + staging_; }
+    finishSave();
+  }
+
+  void finishSave()
+  {
     if (!last_error_.empty()) ROS_ERROR_STREAM(last_error_);
     expire();
     if (active_) finish(last_error_.empty(), last_error_.empty() ? OK : ERR_INTERNAL,
@@ -199,7 +242,9 @@ private:
   void publishFeedback()
   {
     RecordFeedback feedback;
-    feedback.state = ready_ ? 1 : 0;
+    feedback.state = merge_.valid() && command_ == 2 ? 2 : (ready_ ? 1 : 0);
+    feedback.completed_parts = progress_.completed.load();
+    feedback.total_parts = progress_.total.load();
     goal_.publishFeedback(feedback);
   }
 
@@ -207,6 +252,8 @@ private:
   {
     RecordFeedback feedback;
     feedback.state = success ? (command_ == 1 ? 1 : 3) : 4;
+    feedback.completed_parts = progress_.completed.load();
+    feedback.total_parts = progress_.total.load();
     goal_.publishFeedback(feedback);
     const auto result = makeResult<RecordResult>(success, code, text);
     if (success) goal_.setSucceeded(result); else goal_.setAborted(result);
@@ -231,6 +278,7 @@ private:
   {
     expire();
     pollChild();
+    pollMerge();
     if (active_) publishFeedback();
   }
 
@@ -239,8 +287,11 @@ private:
   bool ready_{false}, stopping_{false}, active_{false};
   unsigned command_{0};
   std::uint64_t sequence_{0};
+  std::uint64_t split_size_bytes_{0};
   std::vector<std::string> default_topics_;
-  std::string destination_, staging_, source_, last_error_;
+  std::string destination_, staging_, first_part_, last_error_;
+  RecordingMergeProgress progress_;
+  std::future<void> merge_;
   TaskDeadline deadline_;
   ros::Subscriber ready_sub_;
   ros::WallTimer timer_;

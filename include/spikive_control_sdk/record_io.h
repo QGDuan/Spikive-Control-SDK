@@ -1,4 +1,6 @@
 #pragma once
+#include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -9,4 +11,12 @@ void validateRecordingTopics(const std::vector<std::string>& topics);
 std::string recordingDestination(const std::string& directory, const std::string& name);
 // 同盘私有暂存目录中的已关闭 bag → 最终路径；原子发布，绝不覆盖。
 void publishRecordedBag(const std::string& source, const std::string& destination);
+
+struct RecordingMergeProgress
+{
+  std::atomic<std::uint32_t> completed{0}, total{0};
+  std::atomic<bool> cancelled{false};
+};
+void mergeRecordedParts(const std::string& staging, const std::string& destination,
+                        RecordingMergeProgress& progress);
 }  // namespace spikive_control_sdk

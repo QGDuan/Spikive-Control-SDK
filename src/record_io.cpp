@@ -1,9 +1,11 @@
 #include <spikive_control_sdk/record_io.h>
 #include <boost/filesystem.hpp>
+#include <rosbag/view.h>
 #include <ros/names.h>
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <unistd.h>
@@ -52,5 +54,73 @@ void publishRecordedBag(const std::string& source, const std::string& destinatio
   // 暂存目录就在目标目录内；硬链接为原子、不覆盖的发布操作，无需复制大文件。
   if (::link(source.c_str(), destination.c_str()) != 0)
     throw std::runtime_error("Cannot publish bag without overwriting: " + std::string(std::strerror(errno)));
+}
+
+void mergeRecordedParts(const std::string& staging, const std::string& destination,
+                        RecordingMergeProgress& progress)
+{
+  namespace fs = boost::filesystem;
+  const auto prefix = fs::path(destination).stem().string() + "_";
+  std::map<unsigned long, fs::path> parts;
+  for (const auto& entry : fs::directory_iterator(staging))
+  {
+    const auto name = entry.path().filename().string();
+    if (entry.path().extension() == ".active")
+      throw std::runtime_error("Recorder left an unclosed part: " + name);
+    if (name.compare(0, prefix.size(), prefix) != 0 || entry.path().extension() != ".bag") continue;
+    const auto index = entry.path().stem().string().substr(prefix.size());
+    if (index.empty() || index.find_first_not_of("0123456789") != std::string::npos ||
+        !fs::is_regular_file(entry.path()) || fs::is_symlink(entry.path()) ||
+        !parts.emplace(std::stoul(index), entry.path()).second)
+      throw std::runtime_error("Invalid recording part: " + name);
+  }
+  if (parts.empty()) throw std::runtime_error("No closed recording parts");
+  unsigned long expected_index = 0;
+  for (const auto& part : parts)
+    if (part.first != expected_index++) throw std::runtime_error("A recording part is missing");
+  progress.total = static_cast<std::uint32_t>(parts.size());
+
+  // Keep incomplete merge output apart from source segments for offline recovery.
+  const auto merge_dir = fs::path(staging) / ".merge";
+  const auto merged = (merge_dir / fs::path(destination).filename()).string();
+  if (parts.size() == 1)
+  {
+    const auto path = parts.begin()->second.string();
+    rosbag::Bag input(path, rosbag::bagmode::Read);
+    input.close();
+    if (progress.cancelled) throw std::runtime_error("Merge interrupted");
+    publishRecordedBag(path, destination);
+    progress.completed = 1;
+  }
+  else
+  {
+    fs::create_directory(merge_dir);
+    rosbag::Bag output(merged, rosbag::bagmode::Write);
+    std::uint64_t written = 0;
+    for (const auto& part : parts)
+    {
+      if (progress.cancelled) throw std::runtime_error("Merge interrupted");
+      rosbag::Bag input(part.second.string(), rosbag::bagmode::Read);
+      for (const auto& message : rosbag::View(input))
+      {
+        if (progress.cancelled) throw std::runtime_error("Merge interrupted");
+        output.write(message.getTopic(), message.getTime(), message, message.getConnectionHeader());
+        ++written;
+      }
+      ++progress.completed;
+    }
+    output.close();
+    rosbag::Bag check(merged, rosbag::bagmode::Read);
+    if (rosbag::View(check).size() != written)
+      throw std::runtime_error("Merged bag message count mismatch");
+    check.close();
+    if (progress.cancelled) throw std::runtime_error("Merge interrupted");
+    publishRecordedBag(merged, destination);
+  }
+  boost::system::error_code ignored;
+  for (const auto& part : parts) fs::remove(part.second, ignored);
+  fs::remove(merged, ignored);
+  fs::remove(merge_dir, ignored);
+  fs::remove(staging, ignored);
 }
 }  // namespace spikive_control_sdk

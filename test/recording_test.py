@@ -40,13 +40,21 @@ class Recording(unittest.TestCase):
         cls.client = actionlib.SimpleActionClient('/nav/map/record', RecordAction)
         assert cls.client.wait_for_server(rospy.Duration(10))
         cls.feedbacks = []
+        cls.merge_progress = []
         cls.feedback_sub = rospy.Subscriber('/nav/map/record/feedback', RecordActionFeedback,
-            lambda m: cls.feedbacks.append(m.feedback.state))
+            cls.on_feedback)
         assert wait_for(lambda: cls.feedback_sub.get_num_connections() > 0)
         cls.odom = rospy.Publisher('/record_test/odom', Odometry, queue_size=10, latch=True)
         cls.text = rospy.Publisher('/record_test/text', String, queue_size=10, latch=True)
         cls.omitted = rospy.Publisher('/record_test/not_selected', String, queue_size=10, latch=True)
         cls.omitted.publish('must not appear')
+
+    @classmethod
+    def on_feedback(cls, message):
+        feedback = message.feedback
+        cls.feedbacks.append(feedback.state)
+        if feedback.state == 2:
+            cls.merge_progress.append((feedback.completed_parts, feedback.total_parts))
 
     @classmethod
     def tearDownClass(cls):
@@ -178,7 +186,7 @@ class Recording(unittest.TestCase):
         self.assertIn('data retained:', result.message)
         with open(self.target) as source: self.assertEqual(source.read(), 'do not overwrite')
         retained = result.message.split('data retained: ', 1)[1]
-        with rosbag.Bag(os.path.join(retained, 'record.bag')): pass
+        with rosbag.Bag(os.path.join(retained, self.name + '_0.bag')): pass
         shutil.rmtree(retained)
 
     def test_08_unexpected_worker_death(self):
@@ -199,7 +207,32 @@ class Recording(unittest.TestCase):
             self.assertEqual([(topic, msg.data) for topic, msg, _ in bag.read_messages()],
                              [('/record_test/text', 'configured topic')])
 
-    def test_10_shutdown_closes_owned_recording(self):
+    def test_10_split_and_merge_reports_progress_without_changing_messages(self):
+        before = set(os.listdir(self.root))
+        self.start([])
+        self.assertTrue(wait_for(lambda: self.text.get_num_connections() > 0))
+        staging, = set(os.listdir(self.root)) - before
+        staging = os.path.join(self.root, staging)
+        messages = [f'{i:03d}:' + 'x' * (128 * 1024) for i in range(25)]
+        for message in messages:
+            self.text.publish(message)
+            time.sleep(.03)
+        self.assertTrue(wait_for(lambda: os.path.isfile(os.path.join(staging, self.name + '_1.bag'))))
+        self.assertFalse(os.path.exists(self.target))
+        offset = len(self.merge_progress)
+        self.command(RecordGoal(cmd=2, timeout=5))
+        self.assertTrue(wait_for(lambda: any(done == total and total > 1 for done, total
+                                            in self.merge_progress[offset:])))
+        progress = self.merge_progress[offset:]
+        self.assertEqual([done for done, _ in progress], sorted(done for done, _ in progress))
+        with rosbag.Bag(self.target) as bag:
+            recorded = list(bag.read_messages(return_connection_header=True))
+        self.assertEqual([msg.data for _, msg, _, _ in recorded if msg.data in messages], messages)
+        self.assertTrue(all(topic == '/record_test/text' and header.get('latching') == b'1'
+                            for topic, _, _, header in recorded))
+        self.assertFalse(os.path.exists(staging))
+
+    def test_11_shutdown_closes_owned_recording(self):
         self.start()
         pid = self.worker_pid(); self.assertIsNotNone(pid)
         rosnode.kill_nodes(['/spikive_map_record_node'])

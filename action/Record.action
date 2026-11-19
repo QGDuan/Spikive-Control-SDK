@@ -8,4 +8,6 @@ bool success
 uint8 error_code
 string message
 ---
-uint8 state  # 0 IDLE 1 RECORDING 3 COMPLETED 4 FAILED
+uint8 state  # 0 STARTING 1 RECORDING/CLOSING 2 MERGING 3 COMPLETED 4 FAILED
+uint32 completed_parts
+uint32 total_parts
