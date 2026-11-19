@@ -34,8 +34,8 @@ int recordWorker(int argc, char** argv)
   options.prefix = argv[3];
   options.append_date = false;
   options.publish = true;
-  options.split = true;
   options.max_size = std::stoull(argv[5]);
+  options.split = options.max_size > 0;
   options.topics.assign(argv + 6, argv + argc);
   return rosbag::Recorder(options).run();
 }
@@ -50,10 +50,15 @@ public:
     std::string action;
     pnh.param<std::string>("record/action", action, "/nav/map/record");
     if (action.empty()) throw std::invalid_argument("Record action must not be empty");
-    int split_size_mib;
-    pnh.param("record/split_size_mib", split_size_mib, 500);
-    if (split_size_mib <= 0) throw std::invalid_argument("record/split_size_mib must be positive");
-    split_size_bytes_ = static_cast<std::uint64_t>(split_size_mib) * 1024 * 1024;
+    bool split_enabled;
+    pnh.param("record/split_enabled", split_enabled, false);
+    if (split_enabled)
+    {
+      int split_size_mib;
+      pnh.param("record/split_size_mib", split_size_mib, 500);
+      if (split_size_mib <= 0) throw std::invalid_argument("record/split_size_mib must be positive");
+      split_size_bytes_ = static_cast<std::uint64_t>(split_size_mib) * 1024 * 1024;
+    }
     if (pnh.hasParam("record/topics") && !pnh.getParam("record/topics", default_topics_))
       throw std::invalid_argument("record/topics must be a list of strings");
     if (!default_topics_.empty()) validateRecordingTopics(default_topics_);
@@ -61,7 +66,8 @@ public:
                             [this](Handle h) { onCancel(h); }, false));
     timer_ = nh.createWallTimer(ros::WallDuration(0.05), &MapRecordNode::onTimer, this);
     server_->start();
-    ROS_INFO_STREAM("SDK rosbag recorder: " << action << "; parts: " << split_size_mib << " MiB");
+    ROS_INFO_STREAM("SDK rosbag recorder: " << action << "; split: "
+                    << (split_size_bytes_ > 0 ? "enabled" : "disabled"));
   }
 
   ~MapRecordNode()
@@ -107,9 +113,10 @@ private:
     std::vector<char> buffer(pattern.begin(), pattern.end()); buffer.push_back('\0');
     if (!::mkdtemp(buffer.data())) throw std::runtime_error("Cannot create recording directory: " + std::string(std::strerror(errno)));
     staging_ = buffer.data();
+    const bool split = split_size_bytes_ > 0;
     const auto prefix = (boost::filesystem::path(staging_) /
-                         boost::filesystem::path(destination_).stem()).string();
-    first_part_ = prefix + "_0.bag";
+                         (split ? boost::filesystem::path(destination_).stem() : "record")).string();
+    first_part_ = prefix + (split ? "_0.bag" : ".bag");
     progress_.completed = 0;
     progress_.total = 0;
     progress_.cancelled = false;
@@ -207,10 +214,18 @@ private:
     {
       try
       {
-        merge_ = std::async(std::launch::async, [this] {
-          mergeRecordedParts(staging_, destination_, progress_);
-        });
-        return;
+        if (split_size_bytes_ > 0)
+        {
+          merge_ = std::async(std::launch::async, [this] {
+            mergeRecordedParts(staging_, destination_, progress_);
+          });
+          return;
+        }
+        publishRecordedBag(first_part_, destination_);
+        boost::system::error_code ignored;
+        boost::filesystem::remove(first_part_, ignored);
+        boost::filesystem::remove(staging_, ignored);
+        reportSaved();
       }
       catch (const std::exception& e) { last_error_ = std::string(e.what()) + "; data retained: " + staging_; }
     }
@@ -224,11 +239,16 @@ private:
     try
     {
       merge_.get();
-      ROS_INFO_STREAM("Bag saved: " << destination_);
-      if (!stopping_) last_error_ = "Recorder exited without an SDK stop; bag saved: " + destination_;
+      reportSaved();
     }
     catch (const std::exception& e) { last_error_ = std::string(e.what()) + "; data retained: " + staging_; }
     finishSave();
+  }
+
+  void reportSaved()
+  {
+    ROS_INFO_STREAM("Bag saved: " << destination_);
+    if (!stopping_) last_error_ = "Recorder exited without an SDK stop; bag saved: " + destination_;
   }
 
   void finishSave()

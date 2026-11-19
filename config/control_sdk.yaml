@@ -51,6 +51,7 @@ services:
 # SDK 独立录包。Goal.topics 非空时覆盖配置。
 record:
   action: /nav/map/record
+  split_enabled: false
   split_size_mib: 500
   topics:
     - /rslidar_imu_data

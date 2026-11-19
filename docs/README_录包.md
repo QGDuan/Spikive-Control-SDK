@@ -17,7 +17,7 @@ rosmsg show spikive_control_sdk/RecordGoal
 roslaunch spikive_control_sdk map_record.launch
 ```
 
-分段目标大小由 `record.split_size_mib` 配置，默认 500 MiB。Recorder 按原生 rosbag 的尺寸检查切换分段，实际分段大小可能略超阈值。修改后重启录包节点。
+默认使用单包录制。将 `record.split_enabled` 设为 `true` 后启用分段，目标大小由 `record.split_size_mib` 配置，默认 500 MiB。Recorder 按原生 rosbag 的尺寸检查切换分段，实际分段大小可能略超阈值。修改后重启录包节点。
 
 合并进度更新了 `RecordFeedback` 的消息定义。更新 SDK 时重新编译使用完整 `RecordAction` 的客户端，并让 Foxglove Bridge 从新工作区加载反馈定义。
 
@@ -86,7 +86,7 @@ flowchart LR
   Merge --> Bag[原子保存 bag + result]
 ```
 
-录制时使用目标目录下的私有 `.spikive-record-*`，每段名称为 `bag_name_序号.bag`，当前段带 `.active`。停止录制后按编号合并，保留 ROS 消息内容、记录时间戳和连接头。单段直接发布。多段合并需要额外容纳合并文件的磁盘空间，原子发布为 `bag_path/bag_name.bag` 后才清理分段。
+单包录制写入目标目录下的 `.spikive-record-*/record.bag.active`，停止后直接发布最终文件。启用分段时，暂存目录中的文件名为 `bag_name_序号.bag`，当前段带 `.active`。停止后按编号合并，保留 ROS 消息内容、记录时间戳和连接头。单段直接发布。多段合并需要额外容纳合并文件的磁盘空间，原子发布为 `bag_path/bag_name.bag` 后才清理分段。
 
 合并失败或中断时，结果或日志给出保留分段的路径。用已有的 `record_bag.py merge PARTS_DIR -o OUTPUT.bag` 离线恢复，`PARTS_DIR` 填日志中的目录，输出填一个新文件名。
 
