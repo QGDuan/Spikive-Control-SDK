@@ -4,6 +4,8 @@
   <include file="$(find spikive_control_sdk)/launch/map_record.launch"/>
   <param name="/spikive_map_record_node/record/split_enabled" value="true"/>
   <param name="/spikive_map_record_node/record/split_size_mib" value="1"/>
+  <arg name="output_directory" default="/tmp/$(anon sdk_record_config_directory)"/>
+  <param name="/spikive_map_record_node/record/output_directory" value="$(arg output_directory)"/>
   <rosparam param="/spikive_map_record_node/record/topics">[/record_test/text]</rosparam>
   <test test-name="sdk_recording" pkg="spikive_control_sdk" type="recording_test.py" time-limit="100"/>
 </launch>

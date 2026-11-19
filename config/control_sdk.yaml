@@ -51,6 +51,7 @@ services:
 # SDK 独立录包。Goal.topics 非空时覆盖配置。
 record:
   action: /nav/map/record
+  output_directory: /home/colman/data  # Goal.bag_path 非空时覆盖
   split_enabled: false
   split_size_mib: 500
   topics:
@@ -121,11 +122,11 @@ record:
     - /track_drone_point
 
 # SDK 点云后处理：读取已关闭 bag 中的 cloud topic，全量拼接为 PCD。
-# 输入 bag 由 Goal.bag_path/bag_name 指定；为空时使用 input_directory 下最新 .bag。
+# 输入目录默认跟随 record.output_directory。Goal 可指定其他目录或文件名。
 post_process:
   action: /nav/map/post_process
   pointcloud_topic: ""  # 留空使用 /drone_{drone_id}_cloud_registered
-  input_directory: ""  # 留空使用 $HOME/spikive-output
+  input_directory: ""  # 留空使用 record.output_directory
   output_directory: ""  # 留空使用 $HOME/spikive-output
   lio_nodes:  # 存在任一节点时拒绝后处理，等待 SLAM/LIO 结束
     - /laserMapping

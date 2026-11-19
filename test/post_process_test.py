@@ -100,7 +100,7 @@ class PostProcessTest(unittest.TestCase):
 
     def test_01_concatenates_and_exports(self):
         write_bag("concat", [(1, 2, 3, 0.5), (4, 5, 6, 1.0)])
-        result = self.run_goal(self.goal("concat", "map01"))
+        result = self.run_goal(PostProcessGoal(cmd=1, bag_name="concat", map_name="map01", timeout=10))
         self.assertTrue(result.success, result.message)
         self.assertEqual(result.error_code, 0)
         self.assertTrue(os.path.isfile(os.path.join(OUT, "map01.pcd")))

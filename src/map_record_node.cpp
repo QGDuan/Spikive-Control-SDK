@@ -50,6 +50,10 @@ public:
     std::string action;
     pnh.param<std::string>("record/action", action, "/nav/map/record");
     if (action.empty()) throw std::invalid_argument("Record action must not be empty");
+    pnh.param<std::string>("record/output_directory", output_directory_, DEFAULT_RECORD_OUTPUT_DIRECTORY);
+    if (!boost::filesystem::path(output_directory_).is_absolute() ||
+        output_directory_.find('\0') != std::string::npos)
+      throw std::invalid_argument("record/output_directory must be an absolute path");
     bool split_enabled;
     pnh.param("record/split_enabled", split_enabled, false);
     if (split_enabled)
@@ -66,6 +70,10 @@ public:
                             [this](Handle h) { onCancel(h); }, false));
     timer_ = nh.createWallTimer(ros::WallDuration(0.05), &MapRecordNode::onTimer, this);
     server_->start();
+    output_directory_pub_ = nh.advertise<std_msgs::String>(action + "/output_directory", 1, true);
+    std_msgs::String directory;
+    directory.data = output_directory_;
+    output_directory_pub_.publish(directory);
     ROS_INFO_STREAM("SDK rosbag recorder: " << action << "; split: "
                     << (split_size_bytes_ > 0 ? "enabled" : "disabled"));
   }
@@ -159,7 +167,8 @@ private:
       try
       {
         validateRecordingTopics(topics);
-        destination_ = recordingDestination(req->bag_path, req->bag_name);
+        const auto& directory = req->bag_path.empty() ? output_directory_ : req->bag_path;
+        destination_ = recordingDestination(directory, req->bag_name);
       }
       catch (const std::exception& e) { reject(h, ERR_PARAM_INVALID, e.what()); return; }
       try { startWorker(topics); }
@@ -309,6 +318,8 @@ private:
   std::uint64_t sequence_{0};
   std::uint64_t split_size_bytes_{0};
   std::vector<std::string> default_topics_;
+  std::string output_directory_;
+  ros::Publisher output_directory_pub_;
   std::string destination_, staging_, first_part_, last_error_;
   RecordingMergeProgress progress_;
   std::future<void> merge_;

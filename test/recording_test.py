@@ -207,6 +207,16 @@ class Recording(unittest.TestCase):
             self.assertEqual([(topic, msg.data) for topic, msg, _ in bag.read_messages()],
                              [('/record_test/text', 'configured topic')])
 
+    def test_09b_empty_path_uses_the_advertised_directory(self):
+        configured = rospy.get_param('/spikive_map_record_node/record/output_directory')
+        advertised = rospy.wait_for_message('/nav/map/record/output_directory', String, timeout=4)
+        self.assertEqual(advertised.data, configured)
+        self.addCleanup(shutil.rmtree, configured, ignore_errors=True)
+        self.command(RecordGoal(cmd=1, bag_name=self.name, timeout=3))
+        self.command(RecordGoal(cmd=2, timeout=3))
+        with rosbag.Bag(os.path.join(configured, self.name + '.bag')):
+            pass
+
     def test_10_split_and_merge_reports_progress_without_changing_messages(self):
         before = set(os.listdir(self.root))
         self.start([])

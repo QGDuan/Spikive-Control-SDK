@@ -2,6 +2,8 @@
 
 SDK 使用 ROS 原生 `rosbag::Recorder`。在 [control_sdk.yaml](../config/control_sdk.yaml) 的 `record.topics` 配置默认话题，修改后重启录包节点。客户端可传非空 `topics` 覆盖整份清单。录制保留原消息、坐标和时间戳。
 
+`record.output_directory` 指定 bag 保存目录，默认 `/home/colman/data`。SDK 在 `/nav/map/record/output_directory` 发布当前目录，供地面站显示完整路径。开始请求可留空 `bag_path` 使用此配置，也可用绝对路径显式覆盖。
+
 `Record.action` 新增 `string[] topics`，消息 MD5 与 1.5 不兼容。先在 Noetic 工作区重新编译 SDK 和使用 Record 的客户端，再在每个终端重新 source：
 
 ```bash
@@ -57,7 +59,7 @@ rosbag info /home/colman/data/record_test.bag
 
 | 项目 | 行为 |
 | --- | --- |
-| `cmd=1` | 开始，`bag_path` 为绝对目录，`bag_name` 不带路径和扩展名 |
+| `cmd=1` | 开始，`bag_path` 留空使用配置或传绝对目录，`bag_name` 不带路径和扩展名 |
 | `topics` | 空列表使用 SDK 配置，非空列表覆盖配置。最终列表必须非空、无重复，且使用绝对 ROS 话题名 |
 | `cmd=2` | 停止当前 SDK 会话；路径、名称和 topics 留空，使用开始时的配置 |
 | `timeout` | 本次开始/停止命令的期限，秒；0 不限时，不是录包总时长 |

@@ -19,6 +19,7 @@ roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=2
 - [v1.6 同事交接入口](docs/交接说明_V1.6.md)
 - [v1.6 开发记录](docs/开发记录_V1.6.md)
 - [地面站前后端交互合同](docs/地面站交互_V1.6.md)
+- [录包与 PCD 导出快速教程](docs/ROS录包与PCD导出快速教程.md)
 - [独立录包：话题列表与命令行测试](docs/README_录包.md)
 - [点云后处理与 PCD 导出](docs/README_点云后处理.md)
 - [v1.5 历史安装包说明](docs/README_V1.5_安装.md)
@@ -40,4 +41,4 @@ roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=2
 
 1.5.0 正式包含 1.4.1 接入的速度/yaw 功能，与 1.4.0/1.4.1 的消息定义一致；重编译 SDK 节点并部署带 max_vel/yaw_override 接口的新后端即可。SDK 不替换 Planner 源码，也不接管 MAVROS setpoint。
 
-1.6.0 按新要求将 Record 改为 SDK 自行管理 `rosbag::Recorder`，不再调用 SLAM 录包后端。`Record.action` 新增 `string[] topics`，开始命令必须明确指定；停止只操作本 SDK 的当前录制。**Record 消息 MD5 已变化，SDK 和录包客户端必须一起重新编译、重新 source 工作区。旧 v1.5 安装包不支持此字段。** 四个飞行 Action 和定位消息未变，使用见 [录包说明](docs/README_录包.md)。
+1.6.0 按新要求将 Record 改为 SDK 自行管理 `rosbag::Recorder`，不再调用 SLAM 录包后端。`Record.action` 新增 `string[] topics`，开始命令可以显式覆盖录制话题，留空时使用 YAML 配置的默认清单。停止只操作本 SDK 的当前录制。**Record 消息 MD5 已变化，SDK 和录包客户端必须一起重新编译、重新 source 工作区。旧 v1.5 安装包不支持此字段。** 四个飞行 Action 和定位消息未变，使用见 [录包说明](docs/README_录包.md)。

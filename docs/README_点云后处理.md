@@ -15,7 +15,7 @@ LIO 节点名可在 `post_process/lio_nodes` 中配置。当前默认对应 `lsd
 
 ```text
 uint32 cmd              # 1 开始后处理，2 停止当前后处理
-string map_path         # PCD 输出目录；空 => $HOME/spikive-output
+string map_path         # PCD 输出目录；空 => post_process/output_directory
 string map_name         # PCD 文件名，不含路径/扩展名；空 => bag stem
 float32 timeout         # 本次后处理期限 s；0 不限时
 string bag_path         # 可选：输入 bag 绝对目录；空 => post_process/input_directory
@@ -98,7 +98,7 @@ rostopic pub -1 /nav/map/post_process/goal spikive_control_sdk/PostProcessAction
 post_process:
   action: /nav/map/post_process
   pointcloud_topic: ""          # 空 => /drone_{drone_id}_cloud_registered
-  input_directory: ""           # 空 => $HOME/spikive-output
+  input_directory: ""           # 空 => record.output_directory
   output_directory: ""          # 空 => $HOME/spikive-output
   lio_nodes:
     - /laserMapping
@@ -107,7 +107,7 @@ post_process:
   feedback_period: 0.2
 ```
 
-当前 record 前端默认保存到 `/home/colman/data`，post-process 默认输入目录是 `$HOME/spikive-output`；两者不同，联调时必须显式传 `bag_path`/`bag_name`，或把 `post_process/input_directory` 配成 record 的输出目录。
+`post_process.input_directory` 留空时，后处理从 `record.output_directory` 读取 bag，默认是 `/home/colman/data`。可用 `post_process.input_directory` 指定其他来源，也可在请求里传 `bag_path`。PCD 导出目录由 `post_process.output_directory` 管理，留空时使用 `$HOME/spikive-output`。修改 YAML 后重启使用该配置的节点。
 
 ## 7. 测试
 

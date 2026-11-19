@@ -1,6 +1,7 @@
 #include <spikive_control_sdk/PostProcessAction.h>
 #include <spikive_control_sdk/action_support.h>
 #include <spikive_control_sdk/post_process_io.h>
+#include <spikive_control_sdk/record_io.h>
 
 #include <actionlib/server/action_server.h>
 #include <boost/filesystem.hpp>
@@ -69,7 +70,8 @@ public:
     std::string input, output;
     pnh_.param<std::string>("post_process/input_directory", input, "");
     pnh_.param<std::string>("post_process/output_directory", output, "");
-    if (input.empty()) input = "~/spikive-output";
+    if (input.empty())
+      pnh_.param<std::string>("record/output_directory", input, DEFAULT_RECORD_OUTPUT_DIRECTORY);
     if (output.empty()) output = "~/spikive-output";
     config_.input_directory = expandHome(input);
     config_.output_directory = expandHome(output);

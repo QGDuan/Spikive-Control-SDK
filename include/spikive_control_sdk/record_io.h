@@ -6,6 +6,8 @@
 
 namespace spikive_control_sdk
 {
+constexpr char DEFAULT_RECORD_OUTPUT_DIRECTORY[] = "/home/colman/data";
+
 // 只接受明确的绝对话题，不解析 shell、正则、remap 或隐式 drone_id。
 void validateRecordingTopics(const std::vector<std::string>& topics);
 std::string recordingDestination(const std::string& directory, const std::string& name);
