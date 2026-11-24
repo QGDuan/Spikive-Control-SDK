@@ -1,6 +1,6 @@
 # Spikive-Control-SDK
 
-ROS1 Noetic C++ SDK，负责已有命令转发、状态监视和数据整理。当前版本 **1.7.0**，包含 Goto/Return 规划速度上限与 Goto 终点 yaw 控制；飞行消息沿用 [V1.4 规范](docs/specs/ROS接口规范V1.4.pdf) 和 [阶段附件](docs/specs/接口优先级V1.1_20261102.pdf)，提供一阶段接口、二阶段 1～4 项，并保留 Land。
+ROS1 Noetic C++ SDK，负责已有命令转发、状态监视和数据整理。当前版本 **1.7.1**，包含 Goto/Return 规划速度上限与 Goto 终点 yaw 控制；飞行消息沿用 [V1.4 规范](docs/specs/ROS接口规范V1.4.pdf) 和 [阶段附件](docs/specs/接口优先级V1.1_20261102.pdf)，提供一阶段接口、二阶段 1～4 项，并保留 Land。
 
 | 节点 | 功能 | 对应后端 |
 | --- | --- | --- |

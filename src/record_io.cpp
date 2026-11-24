@@ -51,23 +51,25 @@ void publishRecordedBag(const std::string& source, const std::string& destinatio
   char magic[13];
   if (!input.read(magic, sizeof(magic)) || std::string(magic, sizeof(magic)) != "#ROSBAG V2.0\n")
     throw std::runtime_error("Recorder output is not a ROS bag v2");
-  // 暂存目录就在目标目录内；硬链接为原子、不覆盖的发布操作，无需复制大文件。
+  // 同盘硬链接为原子、不覆盖的发布操作，无需复制大文件。
   if (::link(source.c_str(), destination.c_str()) != 0)
     throw std::runtime_error("Cannot publish bag without overwriting: " + std::string(std::strerror(errno)));
 }
 
-void mergeRecordedParts(const std::string& staging, const std::string& destination,
+void mergeRecordedParts(const std::string& recording_prefix, const std::string& staging,
+                        const std::string& destination,
                         RecordingMergeProgress& progress)
 {
   namespace fs = boost::filesystem;
-  const auto prefix = fs::path(destination).stem().string() + "_";
+  const auto prefix = fs::path(recording_prefix).filename().string() + "_";
   std::map<unsigned long, fs::path> parts;
-  for (const auto& entry : fs::directory_iterator(staging))
+  for (const auto& entry : fs::directory_iterator(fs::path(recording_prefix).parent_path()))
   {
     const auto name = entry.path().filename().string();
+    if (name.compare(0, prefix.size(), prefix) != 0) continue;
     if (entry.path().extension() == ".active")
       throw std::runtime_error("Recorder left an unclosed part: " + name);
-    if (name.compare(0, prefix.size(), prefix) != 0 || entry.path().extension() != ".bag") continue;
+    if (entry.path().extension() != ".bag") continue;
     const auto index = entry.path().stem().string().substr(prefix.size());
     if (index.empty() || index.find_first_not_of("0123456789") != std::string::npos ||
         !fs::is_regular_file(entry.path()) || fs::is_symlink(entry.path()) ||

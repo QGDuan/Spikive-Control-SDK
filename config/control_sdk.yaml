@@ -51,7 +51,7 @@ services:
 # SDK 独立录包。Goal.topics 非空时覆盖配置。
 record:
   action: /nav/map/record
-  output_directory: /home/colman/data  # Goal.bag_path 非空时覆盖
+  output_directory: "~/bags"  # Goal.bag_path 非空时覆盖
   split_enabled: false
   split_size_mib: 500
   topics:

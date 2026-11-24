@@ -92,7 +92,7 @@ rostopic pub -1 /nav/map/record/goal spikive_control_sdk/RecordActionGoal \
 
 ```bash
 # 使用停止结果返回的路径。下行为默认目录示例。
-BAG_PATH="/home/colman/data/$BAG_NAME.bag"
+BAG_PATH="$HOME/bags/$BAG_NAME.bag"
 rosbag info "$BAG_PATH"
 ```
 
@@ -124,7 +124,7 @@ LC_ALL=C grep -a -m 1 '^POINTS ' "$PCD_PATH"
 
 | 配置 | 默认行为 |
 | --- | --- |
-| `record.output_directory` | 保存到 `/home/colman/data`。录包 `bag_path` 可覆盖 |
+| `record.output_directory` | 保存到 `~/bags`。录包 `bag_path` 可覆盖 |
 | `record.topics` | 录包 Goal 留空 `topics` 时使用这份列表 |
 | `record.split_enabled` / `record.split_size_mib` | 默认单包。启用分段后默认每段 500 MiB |
 | `post_process.pointcloud_topic` | 默认使用 `/drone_{drone_id}_cloud_registered` |

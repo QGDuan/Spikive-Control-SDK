@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Real rosbag recording on an isolated master, with no recording backend."""
+import glob
 import io
 import os
 import shutil
@@ -18,7 +19,7 @@ import rostest
 from actionlib_msgs.msg import GoalStatus
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
-from spikive_control_sdk.msg import RecordAction, RecordActionFeedback, RecordGoal
+from spikive_control_sdk.msg import RecordAction, RecordActionFeedback, RecordFeedback, RecordGoal
 
 
 def wait_for(predicate, seconds=5):
@@ -110,6 +111,9 @@ class Recording(unittest.TestCase):
         result, feedback = self.start(['/record_test/odom', '/record_test/text'])
         self.assertEqual(feedback[-1], 1)
         self.assertIn(self.target, result.message)
+        active, = glob.glob(os.path.join(self.root, self.name + '*.bag.active'))
+        self.assertTrue(os.path.basename(active).startswith(self.name))
+        self.assertFalse(os.path.exists(self.target))
         self.assertTrue(wait_for(lambda: self.odom.get_num_connections() > 0 and self.text.get_num_connections() > 0))
         observed = []
         sub = rospy.Subscriber('/record_test/odom', Odometry, lambda m: observed.append(wire(m)))
@@ -123,6 +127,7 @@ class Recording(unittest.TestCase):
         sub.unregister()
         _, feedback = self.command(RecordGoal(cmd=2, timeout=3))
         self.assertEqual(feedback[-1], 3)
+        self.assertFalse(os.path.exists(active))
         with rosbag.Bag(self.target) as bag:
             self.assertEqual(set(bag.get_type_and_topic_info().topics), {'/record_test/odom', '/record_test/text'})
             recorded = [wire(msg) for topic, msg, _ in bag.read_messages('/record_test/odom')]
@@ -186,16 +191,19 @@ class Recording(unittest.TestCase):
         self.assertIn('data retained:', result.message)
         with open(self.target) as source: self.assertEqual(source.read(), 'do not overwrite')
         retained = result.message.split('data retained: ', 1)[1]
-        with rosbag.Bag(os.path.join(retained, self.name + '_0.bag')): pass
-        shutil.rmtree(retained)
+        closed, = glob.glob(retained + '*.bag')
+        self.assertEqual(os.path.dirname(closed), self.root)
+        with rosbag.Bag(closed): pass
 
     def test_08_unexpected_worker_death(self):
         self.start()
+        active, = glob.glob(os.path.join(self.root, self.name + '*.bag.active'))
         pid = self.worker_pid(); self.assertIsNotNone(pid)
         os.kill(pid, signal.SIGKILL)
         time.sleep(.2)
         self.command(RecordGoal(cmd=2, timeout=3), 99)
         self.assertFalse(os.path.exists(self.target))
+        self.assertTrue(os.path.isfile(active))
 
     def test_09_empty_goal_uses_the_configured_topics(self):
         self.text.publish('configured topic')
@@ -217,17 +225,39 @@ class Recording(unittest.TestCase):
         with rosbag.Bag(os.path.join(configured, self.name + '.bag')):
             pass
 
+    def test_09c_directory_is_republished_on_an_existing_subscription(self):
+        configured = rospy.get_param('/spikive_map_record_node/record/output_directory')
+        messages = []
+        subscriber = rospy.Subscriber('/nav/map/record/output_directory', String,
+                                      lambda message: messages.append(message.data))
+        self.addCleanup(subscriber.unregister)
+        self.assertTrue(wait_for(lambda: len(messages) >= 2),
+                        'The directory must reach clients sharing an existing Bridge subscription')
+        self.assertEqual(messages, [configured] * len(messages))
+
+    def test_09d_session_feedback_remains_available_after_start_result(self):
+        self.start()
+        states = []
+        subscriber = rospy.Subscriber('/nav/map/record/session_feedback', RecordFeedback,
+                                      lambda message: states.append(message.state))
+        self.addCleanup(subscriber.unregister)
+        self.assertTrue(wait_for(lambda: states.count(1) >= 2))
+        self.command(RecordGoal(cmd=2, timeout=5))
+        self.assertTrue(wait_for(lambda: states[-1:] == [5]))
+
     def test_10_split_and_merge_reports_progress_without_changing_messages(self):
-        before = set(os.listdir(self.root))
+        if not rospy.get_param('/spikive_map_record_node/record/split_enabled'):
+            self.skipTest('Requires split recording')
         self.start([])
         self.assertTrue(wait_for(lambda: self.text.get_num_connections() > 0))
-        staging, = set(os.listdir(self.root)) - before
-        staging = os.path.join(self.root, staging)
+        active, = glob.glob(os.path.join(self.root, self.name + '*_0.bag.active'))
+        prefix = active[:-len('_0.bag.active')]
         messages = [f'{i:03d}:' + 'x' * (128 * 1024) for i in range(25)]
         for message in messages:
             self.text.publish(message)
             time.sleep(.03)
-        self.assertTrue(wait_for(lambda: os.path.isfile(os.path.join(staging, self.name + '_1.bag'))))
+        self.assertTrue(wait_for(lambda: os.path.isfile(prefix + '_1.bag')))
+        self.assertTrue(glob.glob(prefix + '_*.bag.active'))
         self.assertFalse(os.path.exists(self.target))
         offset = len(self.merge_progress)
         self.command(RecordGoal(cmd=2, timeout=5))
@@ -240,7 +270,7 @@ class Recording(unittest.TestCase):
         self.assertEqual([msg.data for _, msg, _, _ in recorded if msg.data in messages], messages)
         self.assertTrue(all(topic == '/record_test/text' and header.get('latching') == b'1'
                             for topic, _, _, header in recorded))
-        self.assertFalse(os.path.exists(staging))
+        self.assertFalse(glob.glob(prefix + '_*.bag*'))
 
     def test_11_shutdown_closes_owned_recording(self):
         self.start()

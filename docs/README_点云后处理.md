@@ -107,7 +107,7 @@ post_process:
   feedback_period: 0.2
 ```
 
-`post_process.input_directory` 留空时，后处理从 `record.output_directory` 读取 bag，默认是 `/home/colman/data`。可用 `post_process.input_directory` 指定其他来源，也可在请求里传 `bag_path`。PCD 导出目录由 `post_process.output_directory` 管理，留空时使用 `$HOME/spikive-output`。修改 YAML 后重启使用该配置的节点。
+`post_process.input_directory` 留空时，后处理从 `record.output_directory` 读取 bag，默认是 `~/bags`。可用 `post_process.input_directory` 指定其他来源，也可在请求里传 `bag_path`。PCD 导出目录由 `post_process.output_directory` 管理，留空时使用 `$HOME/spikive-output`。修改 YAML 后重启使用该配置的节点。
 
 ## 7. 测试
 

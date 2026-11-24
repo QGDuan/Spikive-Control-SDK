@@ -2,7 +2,9 @@
 
 SDK 使用 ROS 原生 `rosbag::Recorder`。在 [control_sdk.yaml](../config/control_sdk.yaml) 的 `record.topics` 配置默认话题，修改后重启录包节点。客户端可传非空 `topics` 覆盖整份清单。录制保留原消息、坐标和时间戳。
 
-`record.output_directory` 指定 bag 保存目录，默认 `/home/colman/data`。SDK 在 `/nav/map/record/output_directory` 发布当前目录，供地面站显示完整路径。开始请求可留空 `bag_path` 使用此配置，也可用绝对路径显式覆盖。
+`record.output_directory` 指定 bag 保存目录，默认 `~/bags`。SDK 将 `~/` 展开为运行账户的主目录，并在 `/nav/map/record/output_directory` 发布绝对路径。开始请求可留空 `bag_path` 使用此配置，也可用绝对路径显式覆盖。
+
+`/nav/map/record/session_feedback` 使用 `RecordFeedback` 发布当前会话状态。状态码为 0 开始中、1 录制中、2 合并中、5 空闲、6 关闭中。节点在状态或进度变化时发布，每 2 秒也会重发当前状态，供刷新或重连后的客户端恢复界面。Action 的 `feedback` 和 `result` 仍按各自的 Goal ID 对应请求。
 
 `Record.action` 新增 `string[] topics`，消息 MD5 与 1.5 不兼容。先在 Noetic 工作区重新编译 SDK 和使用 Record 的客户端，再在每个终端重新 source：
 
@@ -88,7 +90,7 @@ flowchart LR
   Merge --> Bag[原子保存 bag + result]
 ```
 
-单包录制写入目标目录下的 `.spikive-record-*/record.bag.active`，停止后直接发布最终文件。启用分段时，暂存目录中的文件名为 `bag_name_序号.bag`，当前段带 `.active`。停止后按编号合并，保留 ROS 消息内容、记录时间戳和连接头。单段直接发布。多段合并需要额外容纳合并文件的磁盘空间，原子发布为 `bag_path/bag_name.bag` 后才清理分段。
+录制中的文件直接写入目标目录，通常命名为 `bag_name.spikive-record-<会话标识>.bag.active`。启用分段时，`.bag` 前增加段号，已关闭的分段也留在目标目录，直到合并成功。停止录包后生成 `bag_path/bag_name.bag`。多段按编号合并，保留 ROS 消息内容、记录时间戳和连接头。合并需要额外容纳输出文件的磁盘空间，最终文件发布成功后清理分段。
 
 合并失败或中断时，结果或日志给出保留分段的路径。用已有的 `record_bag.py merge PARTS_DIR -o OUTPUT.bag` 离线恢复，`PARTS_DIR` 填日志中的目录，输出填一个新文件名。
 

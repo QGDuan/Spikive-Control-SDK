@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <memory>
@@ -44,6 +45,7 @@ class MapRecordNode
 {
   using Server = actionlib::ActionServer<RecordAction>;
   using Handle = Server::GoalHandle;
+  enum SessionPhase : std::uint8_t { STARTING = 0, RECORDING = 1, MERGING = 2, IDLE = 5, CLOSING = 6 };
 public:
   MapRecordNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh), pnh_(pnh)
   {
@@ -51,6 +53,13 @@ public:
     pnh.param<std::string>("record/action", action, "/nav/map/record");
     if (action.empty()) throw std::invalid_argument("Record action must not be empty");
     pnh.param<std::string>("record/output_directory", output_directory_, DEFAULT_RECORD_OUTPUT_DIRECTORY);
+    if (output_directory_.compare(0, 2, "~/") == 0)
+    {
+      const char* home = std::getenv("HOME");
+      if (home == nullptr || *home == '\0')
+        throw std::invalid_argument("HOME is not set; cannot resolve record/output_directory");
+      output_directory_ = home + output_directory_.substr(1);
+    }
     if (!boost::filesystem::path(output_directory_).is_absolute() ||
         output_directory_.find('\0') != std::string::npos)
       throw std::invalid_argument("record/output_directory must be an absolute path");
@@ -71,9 +80,18 @@ public:
     timer_ = nh.createWallTimer(ros::WallDuration(0.05), &MapRecordNode::onTimer, this);
     server_->start();
     output_directory_pub_ = nh.advertise<std_msgs::String>(action + "/output_directory", 1, true);
+    session_feedback_pub_ = nh.advertise<RecordFeedback>(action + "/session_feedback", 1, true);
     std_msgs::String directory;
     directory.data = output_directory_;
     output_directory_pub_.publish(directory);
+    publishSessionFeedback(true);
+    // Foxglove can share one ROS subscription across WebSocket clients. A later
+    // client then needs a new message even though the ROS publisher is latched.
+    output_directory_timer_ = nh.createWallTimer(ros::WallDuration(2.0),
+      [this, directory](const ros::WallTimerEvent&) {
+        output_directory_pub_.publish(directory);
+        publishSessionFeedback(true);
+      });
     ROS_INFO_STREAM("SDK rosbag recorder: " << action << "; split: "
                     << (split_size_bytes_ > 0 ? "enabled" : "disabled"));
   }
@@ -94,7 +112,7 @@ public:
         ::kill(pid_, SIGKILL);
         int status;
         while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {}
-        ROS_ERROR_STREAM("Recorder did not close on shutdown; partial data retained: " << staging_);
+        ROS_ERROR_STREAM("Recorder did not close on shutdown; partial data retained: " << recording_prefix_);
       }
     }
     while (merge_.valid() && ros::SteadyTime::now() < until)
@@ -116,22 +134,27 @@ private:
 
   void startWorker(const std::vector<std::string>& topics)
   {
-    // mkdtemp 创建私有目录，避免录制期间覆盖既有文件或另一进程的输出。
-    std::string pattern = (boost::filesystem::path(destination_).parent_path() / ".spikive-record-XXXXXX").string();
+    namespace fs = boost::filesystem;
+    const fs::path destination(destination_);
+    const auto directory = destination.parent_path();
+    // Reserve a unique session suffix and use it for the visible recorder files.
+    const std::string pattern = (directory / ".spikive-record-XXXXXX").string();
     std::vector<char> buffer(pattern.begin(), pattern.end()); buffer.push_back('\0');
     if (!::mkdtemp(buffer.data())) throw std::runtime_error("Cannot create recording directory: " + std::string(std::strerror(errno)));
     staging_ = buffer.data();
-    const bool split = split_size_bytes_ > 0;
-    const auto prefix = (boost::filesystem::path(staging_) /
-                         (split ? boost::filesystem::path(destination_).stem() : "record")).string();
-    first_part_ = prefix + (split ? "_0.bag" : ".bag");
+    const auto suffix = fs::path(staging_).filename().string().substr(1);
+    const auto bag_name = destination.stem().string();
+    // Leave room for the unique suffix, split index and .bag.active extension.
+    const auto visible_name = bag_name.front() != '.' && bag_name.size() <= 200 ? bag_name : "recording";
+    recording_prefix_ = (directory / (visible_name + "." + suffix)).string();
+    first_part_ = recording_prefix_ + (split_size_bytes_ > 0 ? "_0.bag" : ".bag");
     progress_.completed = 0;
     progress_.total = 0;
     progress_.cancelled = false;
     const auto ready_topic = pnh_.resolveName("begin_write_" + std::to_string(++sequence_));
     ready_sub_ = nh_.subscribe(ready_topic, 1, &MapRecordNode::onReady, this);
     std::vector<std::string> args = {"spikive_map_record_node", "--record-worker", std::to_string(::getpid()),
-                                    prefix, ready_topic, std::to_string(split_size_bytes_)};
+                                    recording_prefix_, ready_topic, std::to_string(split_size_bytes_)};
     args.insert(args.end(), topics.begin(), topics.end());
     std::vector<char*> argv;
     for (auto& arg : args) argv.push_back(&arg[0]);
@@ -193,6 +216,7 @@ private:
     active_ = true;
     deadline_.start(req->timeout);
     goal_.setAccepted(req->cmd == 1 ? "Starting SDK rosbag recording" : "Closing SDK rosbag recording");
+    publishSessionFeedback();
     publishFeedback();
   }
 
@@ -204,6 +228,7 @@ private:
     if (pid_ <= 0) return;
     ready_ = true;
     if (stopping_) ::kill(pid_, SIGINT);
+    publishSessionFeedback();
     expire();
     if (active_ && command_ == 1) finish(true, OK, "Recording started; cmd=2 saves " + destination_);
   }
@@ -218,7 +243,7 @@ private:
     ready_sub_.shutdown();
     last_error_.clear();
     if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-      last_error_ = "Recorder exited abnormally; data retained: " + staging_;
+      last_error_ = "Recorder exited abnormally; data retained: " + recording_prefix_;
     else
     {
       try
@@ -226,8 +251,9 @@ private:
         if (split_size_bytes_ > 0)
         {
           merge_ = std::async(std::launch::async, [this] {
-            mergeRecordedParts(staging_, destination_, progress_);
+            mergeRecordedParts(recording_prefix_, staging_, destination_, progress_);
           });
+          publishSessionFeedback();
           return;
         }
         publishRecordedBag(first_part_, destination_);
@@ -236,7 +262,7 @@ private:
         boost::filesystem::remove(staging_, ignored);
         reportSaved();
       }
-      catch (const std::exception& e) { last_error_ = std::string(e.what()) + "; data retained: " + staging_; }
+      catch (const std::exception& e) { last_error_ = std::string(e.what()) + "; data retained: " + recording_prefix_; }
     }
     finishSave();
   }
@@ -250,7 +276,7 @@ private:
       merge_.get();
       reportSaved();
     }
-    catch (const std::exception& e) { last_error_ = std::string(e.what()) + "; data retained: " + staging_; }
+    catch (const std::exception& e) { last_error_ = std::string(e.what()) + "; data retained: " + recording_prefix_; }
     finishSave();
   }
 
@@ -262,6 +288,7 @@ private:
 
   void finishSave()
   {
+    publishSessionFeedback();
     if (!last_error_.empty()) ROS_ERROR_STREAM(last_error_);
     expire();
     if (active_) finish(last_error_.empty(), last_error_.empty() ? OK : ERR_INTERNAL,
@@ -275,6 +302,28 @@ private:
     feedback.completed_parts = progress_.completed.load();
     feedback.total_parts = progress_.total.load();
     goal_.publishFeedback(feedback);
+  }
+
+  void publishSessionFeedback(bool force = false)
+  {
+    RecordFeedback feedback;
+    if (merge_.valid())
+    {
+      feedback.state = MERGING;
+      feedback.completed_parts = progress_.completed.load();
+      feedback.total_parts = progress_.total.load();
+    }
+    else if (pid_ <= 0) feedback.state = IDLE;
+    else if (stopping_) feedback.state = CLOSING;
+    else feedback.state = ready_ ? RECORDING : STARTING;
+
+    if (force || feedback.state != last_session_feedback_.state ||
+        feedback.completed_parts != last_session_feedback_.completed_parts ||
+        feedback.total_parts != last_session_feedback_.total_parts)
+    {
+      session_feedback_pub_.publish(feedback);
+      last_session_feedback_ = feedback;
+    }
   }
 
   void finish(bool success, ErrorCode code, const std::string& text)
@@ -309,6 +358,7 @@ private:
     pollChild();
     pollMerge();
     if (active_) publishFeedback();
+    publishSessionFeedback();
   }
 
   ros::NodeHandle nh_, pnh_;
@@ -320,7 +370,10 @@ private:
   std::vector<std::string> default_topics_;
   std::string output_directory_;
   ros::Publisher output_directory_pub_;
-  std::string destination_, staging_, first_part_, last_error_;
+  ros::Publisher session_feedback_pub_;
+  RecordFeedback last_session_feedback_;
+  ros::WallTimer output_directory_timer_;
+  std::string destination_, staging_, recording_prefix_, first_part_, last_error_;
   RecordingMergeProgress progress_;
   std::future<void> merge_;
   TaskDeadline deadline_;

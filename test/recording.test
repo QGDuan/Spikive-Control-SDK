@@ -2,7 +2,8 @@
   <!-- 独立 master，仅 SDK + ROS 原生 recorder；不启动任何 SLAM/Planner/MAVROS 后端。 -->
   <param name="use_sim_time" value="false"/>
   <include file="$(find spikive_control_sdk)/launch/map_record.launch"/>
-  <param name="/spikive_map_record_node/record/split_enabled" value="true"/>
+  <arg name="split_enabled" default="true"/>
+  <param name="/spikive_map_record_node/record/split_enabled" value="$(arg split_enabled)"/>
   <param name="/spikive_map_record_node/record/split_size_mib" value="1"/>
   <arg name="output_directory" default="/tmp/$(anon sdk_record_config_directory)"/>
   <param name="/spikive_map_record_node/record/output_directory" value="$(arg output_directory)"/>
