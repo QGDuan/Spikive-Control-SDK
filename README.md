@@ -1,6 +1,6 @@
 # Spikive-Control-SDK
 
-ROS1 Noetic C++ SDK，负责已有命令转发、状态监视和数据整理。当前版本 **1.6.0**，包含 Goto/Return 规划速度上限与 Goto 终点 yaw 控制；飞行消息沿用 [V1.4 规范](docs/specs/ROS接口规范V1.4.pdf) 和 [阶段附件](docs/specs/接口优先级V1.1_20261102.pdf)，提供一阶段接口、二阶段 1～4 项，并保留 Land。
+ROS1 Noetic C++ SDK，负责已有命令转发、状态监视和数据整理。当前版本 **1.7.0**，包含 Goto/Return 规划速度上限与 Goto 终点 yaw 控制；飞行消息沿用 [V1.4 规范](docs/specs/ROS接口规范V1.4.pdf) 和 [阶段附件](docs/specs/接口优先级V1.1_20261102.pdf)，提供一阶段接口、二阶段 1～4 项，并保留 Land。
 
 | 节点 | 功能 | 对应后端 |
 | --- | --- | --- |
@@ -42,3 +42,5 @@ roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=2
 1.5.0 正式包含 1.4.1 接入的速度/yaw 功能，与 1.4.0/1.4.1 的消息定义一致；重编译 SDK 节点并部署带 max_vel/yaw_override 接口的新后端即可。SDK 不替换 Planner 源码，也不接管 MAVROS setpoint。
 
 1.6.0 按新要求将 Record 改为 SDK 自行管理 `rosbag::Recorder`，不再调用 SLAM 录包后端。`Record.action` 新增 `string[] topics`，开始命令可以显式覆盖录制话题，留空时使用 YAML 配置的默认清单。停止只操作本 SDK 的当前录制。**Record 消息 MD5 已变化，SDK 和录包客户端必须一起重新编译、重新 source 工作区。旧 v1.5 安装包不支持此字段。** 四个飞行 Action 和定位消息未变，使用见 [录包说明](docs/README_录包.md)。
+
+1.7.0 增加 YAML 默认录包话题和保存目录、可选分段与合并进度，以及独立的 PCD 导出 Action。
