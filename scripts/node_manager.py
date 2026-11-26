@@ -344,6 +344,8 @@ class NodeManager:
         if not launches:
             self.log.error("Config has no 'launches' section: %s", path)
             raise SystemExit(3)
+        if "All" in launches:
+            raise ValueError("Launch name All is reserved for the backend group")
         for name, cfg in launches.items():
             if "launch_cmd" not in cfg:
                 self.log.error("Launch '%s' missing 'launch_cmd'", name)
@@ -393,7 +395,7 @@ class NodeManager:
             return
         queued = False
         try:
-            reason = self._command_reject_reason(msg)
+            reason = self._command_reject_reason((msg.command_type or "").strip())
             if reason:
                 self._set_error(reason, msg.command_type)
                 return
@@ -463,8 +465,7 @@ class NodeManager:
             finally:
                 self._operation_lock.release()
 
-    def _command_reject_reason(self, msg: Command) -> Optional[str]:
-        ctype = (msg.command_type or "").strip()
+    def _command_reject_reason(self, ctype: str) -> Optional[str]:
         if ctype not in ("start_backend", "stop_backend"):
             return f"Unknown command_type: {ctype!r}"
 
@@ -489,7 +490,7 @@ class NodeManager:
 
     def _manage_launch(self, req):
         name = req.launch_name
-        if name not in self.launches:
+        if name != "All" and name not in self.launches:
             return ManageLaunchResponse(False, f"Unknown launch: {name}", [])
         if req.operation not in (ManageLaunchRequest.START, ManageLaunchRequest.STOP):
             return ManageLaunchResponse(False, f"Unknown operation: {req.operation}", [])
@@ -499,6 +500,12 @@ class NodeManager:
         try:
             if not self._refresh_running_nodes():
                 return ManageLaunchResponse(False, "Cannot query ROS node registry", [])
+            if name == "All":
+                command = "start_backend" if starting else "stop_backend"
+                error = self._command_reject_reason(command)
+                if not error:
+                    error = self._start_backend() if starting else self._stop_backend()
+                return ManageLaunchResponse(not error, error or ("Backend ready" if starting else "Backend stopped"), [])
             reason = self._interlock("start" if starting else "stop")
             if reason:
                 return ManageLaunchResponse(False, reason, [])
@@ -525,13 +532,15 @@ class NodeManager:
             self.mode = MODE_STARTING if starting else MODE_STOPPING
         self._publish_status_immediate()
 
-    def _finish_transition(self, error=None):
+    def _finish_transition(self, error=None, expected_mode=None):
         known = self._refresh_running_nodes()
         with self._lock:
             self.starting = self.stopping = False
             self._update_observed_state()
             if not known and not error:
                 error = "Cannot query ROS node registry"
+            if not error and expected_mode and self.mode != expected_mode:
+                error = f"Expected backend {expected_mode}, observed {self.mode}"
             if error:
                 self._set_error(error, "lifecycle")
                 return error
@@ -570,7 +579,7 @@ class NodeManager:
         ctype = (msg.command_type or "").strip()
 
         # Keep a second guard here because state may change after admission.
-        reject_reason = self._command_reject_reason(msg)
+        reject_reason = self._command_reject_reason(ctype)
         if reject_reason is not None:
             self._set_error(reject_reason, ctype)
             return
@@ -584,7 +593,7 @@ class NodeManager:
 
     # ------------------------------------------------------------------ lifecycle
 
-    def _start_backend(self) -> None:
+    def _start_backend(self) -> Optional[str]:
         """Start every launch in topological order with readiness checks."""
         self._set_transition(True)
         error = None
@@ -599,10 +608,9 @@ class NodeManager:
                 self._stop_evt.wait(INTER_LAUNCH_DELAY_SEC)
         except Exception as exc:
             error = str(exc)
-        finally:
-            self._finish_transition(error)
+        return self._finish_transition(error, MODE_READY)
 
-    def _stop_backend(self) -> None:
+    def _stop_backend(self) -> Optional[str]:
         self._set_transition(False)
         errors = []
         try:
@@ -616,8 +624,9 @@ class NodeManager:
                     error = str(exc)
                 if error:
                     errors.append(error)
-        finally:
-            self._finish_transition(", ".join(errors))
+        except Exception as exc:
+            errors.append(str(exc))
+        return self._finish_transition(", ".join(errors), MODE_IDLE)
 
     def _start_launch(self, name: str) -> Optional[str]:
         config = self.launches[name]

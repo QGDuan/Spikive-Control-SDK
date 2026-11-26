@@ -19,7 +19,10 @@ manager_config="$sdk_dir/config/manager/launch_config_airy.yaml"
 launch_tab "Spikive Control SDK" roslaunch spikive_control_sdk spikive_control_sdk.launch \
     drone_id:=2 enable_manager:=true "manager_config:=$manager_config"
 
-sleep 5
+# Let the SDK's roslaunch establish its ROS master before starting the Bridge.
+if ! python3 -c 'import rospy; rospy.wait_for_service("/drone_2_manage_launch", timeout=20)' ; then
+    printf 'Spikive startup: Manager service is not ready yet. Starting Bridge for diagnostics.\n' >&2
+fi
 launch_tab "Foxglove Bridge" roslaunch foxglove_bridge foxglove_bridge.launch _drone_id:=2
 
 camera_device=${SPIKIVE_CAMERA_DEVICE:-/dev/video0}

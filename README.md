@@ -21,10 +21,12 @@ roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=2
 
 独立启动 Manager 可执行 `roslaunch spikive_control_sdk manager.launch drone_id:=2`。默认使用 MID360 配置，传入 `config:=<YAML绝对路径>` 可选择 Airy 或 S10 Ultra。统一 launch 对应参数为 `manager_config`。三个机型文件位于 [config/manager](config/manager)。
 
-整套启停沿用 `/drone_{id}_command_topic` 和 `/drone_{id}_auto_manager_status`，消息类型为 `spikive_control_sdk/Command` 和 `spikive_control_sdk/AutoManager`。单项调用使用同步服务 `/drone_{id}_manage_launch`，类型为 `spikive_control_sdk/ManageLaunch`。
+地面站通过同步服务 `/drone_{id}_manage_launch` 调用 `All`，START=1、STOP=2。服务返回后检查 success 和 message。兼容的命令和状态 topic 为 `/drone_{id}_command_topic` 和 `/drone_{id}_auto_manager_status`，消息类型为 `spikive_control_sdk/Command` 和 `spikive_control_sdk/AutoManager`。单项调用使用同步服务 `/drone_{id}_manage_launch`，类型为 `spikive_control_sdk/ManageLaunch`。
 
 ```bash
 # operation=1 启动 Planner，operation=2 只关闭 Planner
+rosservice call /drone_2_manage_launch "{launch_name: 'All', operation: 1}"
+rosservice call /drone_2_manage_launch "{launch_name: 'All', operation: 2}"
 rosservice call /drone_2_manage_launch "{launch_name: 'Planner', operation: 1}"
 rosservice call /drone_2_manage_launch "{launch_name: 'Planner', operation: 2}"
 ```

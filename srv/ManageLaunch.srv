@@ -1,5 +1,6 @@
 uint8 START=1
 uint8 STOP=2
+# Configured launch name, or All for the complete backend group.
 string launch_name
 uint8 operation
 ---

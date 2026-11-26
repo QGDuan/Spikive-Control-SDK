@@ -146,11 +146,20 @@ class ManagerLifecycle(unittest.TestCase):
         self.bulk("stop_backend", "idle")
         self.assertFalse(set(rosnode.get_node_names()) & {"/fixture_" + n.lower() for n in self.names})
 
+    def test_all_service(self):
+        self.keep_disarmed()
+        self.assert_call("All", START)
+        self.assertEqual(self.status().mode, "ready")
+        self.assertFalse(self.call("All", START).success)
+        self.assert_call("All", STOP)
+        self.assertEqual(self.status().mode, "idle")
+        self.assertFalse(self.call("All", STOP).success)
+
     def test_interlock_and_timeout(self):
         self.assertFalse(self.call("unknown", START).success)
         self.assertFalse(self.call("LIO", 99).success)
         self.assertIn("stale", self.call("Planner", STOP).message)
-        result = self.call("LIO", START)
+        result = self.call("All", START)
         self.assertIn("not READY", result.message)
         self.assertNotIn("/fixture_lio", rosnode.get_node_names())
         self.state.publish(State(armed=True))
