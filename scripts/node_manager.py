@@ -465,12 +465,12 @@ class NodeManager:
 
     def _command_reject_reason(self, msg: Command) -> Optional[str]:
         ctype = (msg.command_type or "").strip()
-        if ctype not in ("start_all", "shutdown_all"):
+        if ctype not in ("start_backend", "stop_backend"):
             return f"Unknown command_type: {ctype!r}"
 
-        if ctype == "start_all" and self.is_active:
+        if ctype == "start_backend" and self.is_active:
             return "REJECTED: already running"
-        if ctype == "shutdown_all" and not self.is_active and not any(
+        if ctype == "stop_backend" and not self.is_active and not any(
             p.has_group() for p in self.processes.values()
         ):
             return "REJECTED: no owned launch to stop"
@@ -483,7 +483,7 @@ class NodeManager:
             fresh = self._is_mavros_state_fresh()
             if fresh and self.armed:
                 return f"REJECTED: drone armed, aborting {operation}"
-            if not fresh and operation in ("shutdown_all", "stop"):
+            if not fresh and operation in ("stop_backend", "stop"):
                 return f"REJECTED: MAVROS state missing or stale, aborting {operation}"
         return None
 
@@ -575,16 +575,16 @@ class NodeManager:
             self._set_error(reject_reason, ctype)
             return
 
-        if ctype == "start_all":
-            self._start_all()
-        elif ctype == "shutdown_all":
-            self._shutdown_all()
+        if ctype == "start_backend":
+            self._start_backend()
+        elif ctype == "stop_backend":
+            self._stop_backend()
         else:
             self._set_error(f"Unknown command_type: {ctype!r}", ctype)
 
     # ------------------------------------------------------------------ lifecycle
 
-    def _start_all(self) -> None:
+    def _start_backend(self) -> None:
         """Start every launch in topological order with readiness checks."""
         self._set_transition(True)
         error = None
@@ -593,7 +593,7 @@ class NodeManager:
                 if not self._refresh_running_nodes():
                     error = "Cannot query ROS node registry"
                     break
-                error = self._interlock("start_all") or self._operate_launch(name, True)
+                error = self._interlock("start_backend") or self._operate_launch(name, True)
                 if error:
                     break
                 self._stop_evt.wait(INTER_LAUNCH_DELAY_SEC)
@@ -602,7 +602,7 @@ class NodeManager:
         finally:
             self._finish_transition(error)
 
-    def _shutdown_all(self) -> None:
+    def _stop_backend(self) -> None:
         self._set_transition(False)
         errors = []
         try:

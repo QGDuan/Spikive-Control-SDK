@@ -136,14 +136,14 @@ class ManagerLifecycle(unittest.TestCase):
         with self.assertRaises(ProcessLookupError):
             os.kill(planner_pid, 0)
         self.assert_call("Planner", STOP)
-        self.bulk("start_all", "ready")
+        self.bulk("start_backend", "ready")
         self.assertEqual(self.pid("WaypointRecorder"), waypoint_pid)
         planner_pid = self.pid("Planner")
         self.assert_call("LIO", STOP)
         self.assertEqual(self.pid("Planner"), planner_pid)
         self.assertEqual(self.pid("WaypointRecorder"), waypoint_pid)
         self.assertEqual(self.status().mode, "partial")
-        self.bulk("shutdown_all", "idle")
+        self.bulk("stop_backend", "idle")
         self.assertFalse(set(rosnode.get_node_names()) & {"/fixture_" + n.lower() for n in self.names})
 
     def test_interlock_and_timeout(self):
