@@ -1,0 +1,10 @@
+<launch>
+  <arg name="drone_id" default="1"/>
+  <arg name="config" default="$(find spikive_control_sdk)/config/manager/launch_config.yaml"/>
+  <arg name="log_root" default="$(env HOME)/spikive_logs"/>
+  <node pkg="spikive_control_sdk" type="node_manager.py" name="node_manager_$(arg drone_id)" required="true" output="log">
+    <param name="drone_id" value="$(arg drone_id)" type="str"/>
+    <param name="config_path" value="$(arg config)"/>
+    <param name="log_root" value="$(arg log_root)"/>
+  </node>
+</launch>

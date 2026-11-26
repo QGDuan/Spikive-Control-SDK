@@ -1,0 +1,40 @@
+launches:
+  Lidar_Driver:
+    group: drivers
+    nodes: ["/rslidar_sdk_node"]
+    launch_cmd: "source ~/driver_ws/devel/setup.bash; roslaunch rslidar_sdk start.launch"
+    start_timeout: 10.0
+
+  MavRos:
+    group: drivers
+    nodes: ["/mavros"]
+    launch_cmd: "roslaunch mavros px4.launch"
+    start_timeout: 10.0
+
+  LIO:
+    group: algo
+    depends_on: ["Lidar_Driver"]
+    nodes: ["/laserMapping", "/slam_to_uav_transform"]
+    launch_cmd: "source ~/driver_ws/devel/setup.bash; roslaunch lsdc_slam mapping_airy.launch"
+    start_timeout: 15.0
+
+  Planner:
+    group: algo
+    depends_on: ["LIO"]
+    nodes: ["/drone_${DRONE_ID}_ego_planner_node", "/drone_${DRONE_ID}_traj_server", "/drone_${DRONE_ID}_odom_visualization"]
+    launch_cmd: "source ~/ego_ws/devel/setup.bash; roslaunch ego_planner single_simple_run.launch"
+    start_timeout: 15.0
+
+  WaypointRecorder:
+    group: algo
+    depends_on: ["Planner"]
+    nodes: ["/waypoint_recorder"]
+    launch_cmd: "source ~/driver_ws/devel/setup.bash; rosrun waypoint_recorder waypoint_recorder.py _drone_id:=${DRONE_ID}"
+    start_timeout: 10.0
+
+  Localization:
+    group: algo
+    depends_on: ["LIO", "WaypointRecorder"]
+    nodes: ["/global_match"]
+    launch_cmd: "source ~/driver_ws/devel/setup.bash; roslaunch lsdc_slam localization.launch drone_id:=${DRONE_ID}"
+    start_timeout: 8.0

@@ -10,7 +10,7 @@ find_package(Threads REQUIRED)
 
 add_action_files(FILES takeoff.action land.action goto.action return_home.action relocalize.action Record.action PostProcess.action)
 add_service_files(FILES LoadMap.srv EmergencyCmd.srv)
-add_message_files(FILES LocalizationStatus.msg FlightState.msg)
+add_message_files(FILES LocalizationStatus.msg FlightState.msg Command.msg AutoManager.msg)
 generate_messages(DEPENDENCIES actionlib_msgs std_msgs geometry_msgs)
 catkin_package(INCLUDE_DIRS include
   LIBRARIES ${PROJECT_NAME} spikive_localization_sdk spikive_record_io spikive_post_process_io
@@ -62,6 +62,7 @@ install(TARGETS ${PROJECT_NAME} spikive_localization_sdk spikive_record_io spiki
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY include/${PROJECT_NAME}/ DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION})
+catkin_install_python(PROGRAMS scripts/node_manager.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY launch config DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
 
 if(CATKIN_ENABLE_TESTING)

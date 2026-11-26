@@ -1,6 +1,12 @@
 <launch>
   <arg name="drone_id" default="1"/>
   <arg name="config_file" default="$(find spikive_control_sdk)/config/control_sdk.yaml"/>
+  <arg name="enable_manager" default="false"/>
+  <arg name="manager_config" default="$(find spikive_control_sdk)/config/manager/launch_config.yaml"/>
+  <include if="$(arg enable_manager)" file="$(find spikive_control_sdk)/launch/manager.launch">
+    <arg name="drone_id" value="$(arg drone_id)"/>
+    <arg name="config" value="$(arg manager_config)"/>
+  </include>
   <arg name="enable_flight" default="true"/>
   <include if="$(arg enable_flight)" file="$(find spikive_control_sdk)/launch/flight.launch">
     <arg name="drone_id" value="$(arg drone_id)"/>
