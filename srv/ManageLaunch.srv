@@ -1,0 +1,8 @@
+uint8 START=1
+uint8 STOP=2
+string launch_name
+uint8 operation
+---
+bool success
+string message
+string[] unready_dependencies

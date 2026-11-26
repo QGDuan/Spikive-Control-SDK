@@ -48,6 +48,7 @@ import rospy
 import yaml
 
 from spikive_control_sdk.msg import AutoManager, Command
+from spikive_control_sdk.srv import ManageLaunch, ManageLaunchRequest, ManageLaunchResponse
 
 try:
     from mavros_msgs.msg import State as MavrosState
@@ -145,12 +146,25 @@ class ManagedProcess:
         self.started_at: Optional[float] = None
 
     def is_alive(self) -> bool:
-        return self._popen is not None and self._popen.poll() is None
+        child = self._popen
+        return child is not None and child.poll() is None
+
+    def has_group(self) -> bool:
+        child = self._popen
+        if child is None:
+            return False
+        child.poll()  # Reap the leader before checking its process group.
+        try:
+            os.killpg(child.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
 
     def start(self) -> None:
         if self.is_alive():
             self.log.warning("ManagedProcess[%s] already running, skip start", self.name)
             return
+        self._cleanup_fd()
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
         self._log_fd = open(self.log_path, "ab", buffering=0)
         self._log_fd.write(
@@ -162,7 +176,7 @@ class ManagedProcess:
             executable="/bin/bash",
             stdout=self._log_fd,
             stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,  # own process group -> killpg works cleanly
+            start_new_session=True,  # own process group -> killpg works cleanly
             close_fds=True,
         )
         self.started_at = time.time()
@@ -171,36 +185,20 @@ class ManagedProcess:
     def stop(self, grace_sec: float = GRACE_SHUTDOWN_SEC) -> None:
         if self._popen is None:
             return
-        if self._popen.poll() is not None:
-            self._cleanup_fd()
-            self._popen = None
-            return
-        try:
-            pgid = os.getpgid(self._popen.pid)
-        except ProcessLookupError:
-            self._cleanup_fd()
-            self._popen = None
-            return
-        self.log.info("Stopping [%s] pgid=%d (SIGINT, grace %.1fs)", self.name, pgid, grace_sec)
-        try:
-            os.killpg(pgid, signal.SIGINT)
-        except ProcessLookupError:
-            pass
-        deadline = time.time() + grace_sec
-        while time.time() < deadline:
-            if self._popen.poll() is not None:
+        pgid = self._popen.pid  # start_new_session makes the child's PID its PGID.
+        for sig, timeout in ((signal.SIGINT, grace_sec), (signal.SIGKILL, 2.0)):
+            if not self.has_group():
                 break
-            time.sleep(0.2)
-        if self._popen.poll() is None:
-            self.log.warning("Force-killing [%s] pgid=%d (SIGKILL)", self.name, pgid)
+            self.log.info("Stopping [%s] pgid=%d signal=%s", self.name, pgid, sig)
             try:
-                os.killpg(pgid, signal.SIGKILL)
+                os.killpg(pgid, sig)
             except ProcessLookupError:
-                pass
-            try:
-                self._popen.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                self.log.error("[%s] did not exit after SIGKILL", self.name)
+                break
+            deadline = time.monotonic() + timeout
+            while self.has_group() and time.monotonic() < deadline:
+                time.sleep(0.1)
+        if self.has_group():
+            raise RuntimeError(f"Process group for '{self.name}' is still present")
         self._cleanup_fd()
         self._popen = None
         self.started_at = None
@@ -293,11 +291,17 @@ class NodeManager:
 
         # Single-consumer command queue: ROS callback enqueues, worker thread executes.
         # This prevents Popen + sleep loops from blocking the rospy callback queue.
-        self.cmd_queue: "queue.Queue[Command]" = queue.Queue(maxsize=16)
+        self.cmd_queue: "queue.Queue[Optional[Command]]" = queue.Queue(maxsize=1)
         self._last_command: Command = Command()
 
+        # Reserve the lifecycle slot before ACK so service calls cannot overtake queued commands.
+        self._operation_lock = threading.Lock()
+        self._stop_evt = threading.Event()
+        self._refresh_lock = threading.Lock()
+        self._refresh_running_nodes()
+        self._recover_state()
+
         # ---- ROS I/O --------------------------------------------------------
-        self._cmd_sub = rospy.Subscriber(self.cmd_topic, Command, self._on_command, queue_size=4)
         self._status_pub = rospy.Publisher(self.status_topic, AutoManager, queue_size=10)
 
         if _MAVROS_AVAILABLE:
@@ -312,7 +316,6 @@ class NodeManager:
             raise SystemExit(4)
 
         # ---- threads --------------------------------------------------------
-        self._stop_evt = threading.Event()
         self._worker = threading.Thread(target=self._worker_loop, name="cmd_worker", daemon=True)
         self._worker.start()
         self._health = threading.Thread(target=self._health_loop, name="health_loop", daemon=True)
@@ -322,9 +325,8 @@ class NodeManager:
         )
         rospy.on_shutdown(self._shutdown_hook)
 
-        # ---- recover state from currently running nodes ---------------------
-        self._refresh_running_nodes()
-        self._recover_state()
+        self._cmd_sub = rospy.Subscriber(self.cmd_topic, Command, self._on_command, queue_size=4)
+        self._service = rospy.Service(f"/drone_{self.drone_id}_manage_launch", ManageLaunch, self._manage_launch)
 
         self.log.info(
             "spikive_manager ready (mode=%s is_active=%s)", self.mode, self.is_active,
@@ -384,27 +386,23 @@ class NodeManager:
         # Admission is intentionally done in the ROS callback before queueing:
         # stale lifecycle commands must not wait behind a long startup and then
         # execute against a different backend state.
-        reject_reason = self._command_reject_reason(msg)
-        if reject_reason is not None:
-            with self._lock:
-                self._last_command = msg
-            self._set_error(reject_reason, (msg.command_type or "").strip())
+        with self._lock:
+            self._last_command = msg
+        if not self._operation_lock.acquire(blocking=False):
+            self._set_error("REJECTED: Manager busy", msg.command_type)
             return
-
-        # Stay non-blocking: the worker thread does the real work.
+        queued = False
         try:
-            with self._lock:
-                self._last_command = msg
-            self.cmd_queue.put_nowait(msg)
+            reason = self._command_reject_reason(msg)
+            if reason:
+                self._set_error(reason, msg.command_type)
+                return
             self._publish_status_immediate()
-            self.log.info(
-                "Queued command: type=%s targets=%s qsize=%d request=%s",
-                msg.command_type, list(msg.target_launches), self.cmd_queue.qsize(), msg.extra_data,
-            )
-        except queue.Full:
-            with self._lock:
-                self._last_command = msg
-            self._set_error("Command queue full, dropping command", msg.command_type)
+            self.cmd_queue.put_nowait(msg)
+            queued = True
+        finally:
+            if not queued:
+                self._operation_lock.release()
 
     def _on_mavros_state(self, msg) -> None:  # MavrosState (or None at type-check time)
         stamp = getattr(getattr(msg, "header", None), "stamp", None)
@@ -453,58 +451,119 @@ class NodeManager:
     # ------------------------------------------------------------------ worker
 
     def _worker_loop(self) -> None:
-        while not self._stop_evt.is_set() and not rospy.is_shutdown():
-            try:
-                msg = self.cmd_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
+        while True:
+            msg = self.cmd_queue.get()
+            if msg is None:
+                return
             try:
                 self._handle_command(msg)
             except Exception as e:  # pylint: disable=broad-except
                 self.log.exception("Command handler crashed: %s", e)
                 self._set_error(f"Internal error: {e!r}", msg.command_type)
             finally:
-                with self._lock:
-                    self._last_command = msg
+                self._operation_lock.release()
 
     def _command_reject_reason(self, msg: Command) -> Optional[str]:
         ctype = (msg.command_type or "").strip()
         if ctype not in ("start_all", "shutdown_all"):
             return f"Unknown command_type: {ctype!r}"
 
+        if ctype == "start_all" and self.is_active:
+            return "REJECTED: already running"
+        if ctype == "shutdown_all" and not self.is_active and not any(
+            p.has_group() for p in self.processes.values()
+        ):
+            return "REJECTED: no owned launch to stop"
+        return self._interlock(ctype)
+
+    def _interlock(self, operation: str) -> Optional[str]:
+        if self._stop_evt.is_set():
+            return "Manager is shutting down"
         with self._lock:
-            armed = self.armed
-            starting = self.starting
-            stopping = self.stopping
-            is_active = self.is_active
-            mavros_state_seen = self._mavros_state_seen
-            mavros_state_age = (
-                None
-                if self.mavros_state_rx_time is None
-                else time.time() - self.mavros_state_rx_time
-            )
-            mode = self.mode
+            fresh = self._is_mavros_state_fresh()
+            if fresh and self.armed:
+                return f"REJECTED: drone armed, aborting {operation}"
+            if not fresh and operation in ("shutdown_all", "stop"):
+                return f"REJECTED: MAVROS state missing or stale, aborting {operation}"
+        return None
 
-        mavros_state_fresh = (
-            mavros_state_seen
-            and mavros_state_age is not None
-            and mavros_state_age <= MAVROS_STATE_MAX_AGE_SEC
-        )
+    def _manage_launch(self, req):
+        name = req.launch_name
+        if name not in self.launches:
+            return ManageLaunchResponse(False, f"Unknown launch: {name}", [])
+        if req.operation not in (ManageLaunchRequest.START, ManageLaunchRequest.STOP):
+            return ManageLaunchResponse(False, f"Unknown operation: {req.operation}", [])
+        if not self._operation_lock.acquire(blocking=False):
+            return ManageLaunchResponse(False, "Manager busy", [])
+        starting = req.operation == ManageLaunchRequest.START
+        try:
+            if not self._refresh_running_nodes():
+                return ManageLaunchResponse(False, "Cannot query ROS node registry", [])
+            reason = self._interlock("start" if starting else "stop")
+            if reason:
+                return ManageLaunchResponse(False, reason, [])
+            if starting:
+                missing = [dep for dep in self.launches[name]["depends_on"]
+                           if self._check_subsystem(dep) != ST_READY]
+                if missing:
+                    return ManageLaunchResponse(False, "Dependencies not ready", missing)
+            self._set_transition(starting)
+            error = self._operate_launch(name, starting)
+            error = self._finish_transition(error)
+            return ManageLaunchResponse(not error, error or f"{name} {'ready' if starting else 'stopped'}", [])
+        except Exception as exc:
+            error = f"Cannot manage '{name}': {exc}"
+            self._finish_transition(error)
+            return ManageLaunchResponse(False, error, [])
+        finally:
+            self._operation_lock.release()
 
-        if starting or stopping:
-            return f"REJECTED: cannot {ctype} while mode={mode}"
-        if ctype == "start_all" and is_active:
-            return "REJECTED: already running; send shutdown_all first"
-        if ctype == "shutdown_all" and not is_active:
-            return "REJECTED: nothing to stop; not active"
+    def _set_transition(self, starting):
+        with self._lock:
+            self.starting = starting
+            self.stopping = not starting
+            self.mode = MODE_STARTING if starting else MODE_STOPPING
+        self._publish_status_immediate()
 
-        if mavros_state_fresh and armed:
-            return f"REJECTED: drone armed, aborting {ctype}; {self._format_mavros_state()}"
-        if ctype == "shutdown_all" and not mavros_state_fresh:
-            return (
-                "REJECTED: MAVROS state missing or stale, aborting shutdown_all; "
-                f"{self._format_mavros_state()}"
-            )
+    def _finish_transition(self, error=None):
+        known = self._refresh_running_nodes()
+        with self._lock:
+            self.starting = self.stopping = False
+            self._update_observed_state()
+            if not known and not error:
+                error = "Cannot query ROS node registry"
+            if error:
+                self._set_error(error, "lifecycle")
+                return error
+            else:
+                self.last_error = ""
+        self._publish_status_immediate()
+        return None
+
+    def _operate_launch(self, name, starting):
+        process = self.processes[name]
+        status = self._check_subsystem(name)
+        owned = process.has_group()
+        if not owned and status != ST_NOT_RUNNING:
+            return f"'{name}' has external nodes; Manager does not own them"
+        if starting:
+            if owned:
+                if process.is_alive() and status == ST_READY:
+                    return None
+                return f"'{name}' is partially running; stop it before restarting"
+            return self._start_launch(name)
+        else:
+            process.stop()
+            # A separately owned roslaunch child may take time to unregister.
+            deadline = time.monotonic() + GRACE_SHUTDOWN_SEC
+            while True:
+                if not self._refresh_running_nodes():
+                    return "Cannot query ROS node registry"
+                if self._check_subsystem(name) == ST_NOT_RUNNING:
+                    return None
+                if time.monotonic() >= deadline:
+                    return f"'{name}' still has registered nodes after stopping"
+                time.sleep(0.2)
         return None
 
     def _handle_command(self, msg: Command) -> None:
@@ -527,158 +586,126 @@ class NodeManager:
 
     def _start_all(self) -> None:
         """Start every launch in topological order with readiness checks."""
-        with self._lock:
-            self.starting = True
-            self.mode = MODE_STARTING
-        self._publish_status_immediate()
-        self.log.info("Begin start_all")
-        if not self._is_mavros_state_fresh():
-            self.log.warning(
-                "start_all armed precheck skipped because MAVROS state is missing or stale; %s",
-                self._format_mavros_state(),
-            )
-
-        ok = True
-        for name in self.launch_order:
-            if not self._start_launch(name):
-                ok = False
-                break
-            time.sleep(INTER_LAUNCH_DELAY_SEC)
-
-        with self._lock:
-            self.starting = False
-            if ok:
-                self.is_active = True
-                self.mode = MODE_READY
-                self.log.info("All launches ready (is_active=true)")
-            else:
-                self.mode = MODE_ERROR
-                self.log.error("Start sequence aborted: %s", self.last_error or "unknown")
-        self._publish_status_immediate()
-        if ok:
-            self._log_stop_interlock_after_start()
-
-    def _stop_all_processes(self) -> None:
-        """Stop every launch in reverse topological order."""
-        for name in reversed(self.launch_order):
-            self.processes[name].stop()
+        self._set_transition(True)
+        error = None
+        try:
+            for name in self.launch_order:
+                if not self._refresh_running_nodes():
+                    error = "Cannot query ROS node registry"
+                    break
+                error = self._interlock("start_all") or self._operate_launch(name, True)
+                if error:
+                    break
+                self._stop_evt.wait(INTER_LAUNCH_DELAY_SEC)
+        except Exception as exc:
+            error = str(exc)
+        finally:
+            self._finish_transition(error)
 
     def _shutdown_all(self) -> None:
-        with self._lock:
-            self.stopping = True
-            self.mode = MODE_STOPPING
-        self._publish_status_immediate()
-        self.log.info("Begin shutdown_all")
-        self._stop_all_processes()
-        with self._lock:
-            self.stopping = False
-            self.is_active = False
-            self.mode = MODE_IDLE
-        self._publish_status_immediate()
-        self.log.info("shutdown_all complete")
-
-    def _start_launch(self, name: str) -> bool:
-        cfg = self.launches[name]
-        timeout = float(cfg.get("start_timeout", 8.0))
-        ready_delay = float(cfg.get("ready_delay", 0.0))
-        nodes: List[str] = list(cfg.get("nodes", []))
-
+        self._set_transition(False)
+        errors = []
         try:
-            self.processes[name].start()
-        except Exception as e:  # pylint: disable=broad-except
-            self._set_error(f"Failed to spawn '{name}': {e!r}", "start")
-            return False
+            for name in reversed(self.launch_order):
+                if not self._refresh_running_nodes():
+                    errors.append("Cannot query ROS node registry")
+                    break
+                try:
+                    error = self._operate_launch(name, False)
+                except Exception as exc:
+                    error = str(exc)
+                if error:
+                    errors.append(error)
+        finally:
+            self._finish_transition(", ".join(errors))
 
-        if not nodes:
-            # No node-readiness criteria; trust the Popen and move on.
-            self.log.warning("No 'nodes' configured for '%s', skipping readiness check", name)
-            if ready_delay > 0.0:
-                self.log.info("'%s' ready_delay %.1fs before next launch", name, ready_delay)
-                time.sleep(ready_delay)
-            return True
-
-        if not self._wait_until_ready(name, nodes, timeout):
-            return False
-
-        if ready_delay > 0.0:
-            self.log.info("'%s' ready_delay %.1fs before next launch", name, ready_delay)
-            time.sleep(ready_delay)
-        return True
-
-    def _wait_until_ready(self, launch_name: str, nodes: List[str], timeout: float) -> bool:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if not self.processes[launch_name].is_alive():
-                self._set_error(f"'{launch_name}' exited during startup", "start")
-                return False
-            self._refresh_running_nodes()
-            with self._running_nodes_lock:
-                if all(n in self._running_nodes for n in nodes):
-                    self.log.info("'%s' READY (nodes=%s)", launch_name, nodes)
-                    return True
-            time.sleep(ROSNODE_LIST_INTERVAL)
-        missing = [n for n in nodes if n not in self._running_nodes]
-        self._set_error(
-            f"'{launch_name}' not READY after {timeout:.1f}s (missing={missing})", "start",
-        )
-        # Tear it down so we don't leak a half-started launch.
-        self.processes[launch_name].stop()
-        return False
+    def _start_launch(self, name: str) -> Optional[str]:
+        config = self.launches[name]
+        process = self.processes[name]
+        process.start()
+        timeout = float(config["start_timeout"])
+        deadline = time.monotonic() + timeout
+        while not self._stop_evt.is_set():
+            if not process.is_alive():
+                error = f"'{name}' exited during startup"
+                break
+            if self._refresh_running_nodes() and self._check_subsystem(name) == ST_READY:
+                delay = float(config["ready_delay"])
+                if self._stop_evt.wait(delay):
+                    error = "Manager is shutting down"
+                    break
+                if process.is_alive() and self._refresh_running_nodes() and self._check_subsystem(name) == ST_READY:
+                    self.log.info("'%s' READY", name)
+                    return None
+                error = f"'{name}' lost readiness during startup"
+                break
+            if time.monotonic() >= deadline:
+                with self._running_nodes_lock:
+                    missing = sorted(set(config["nodes"]) - self._running_nodes)
+                error = f"'{name}' not READY after {timeout:.1f}s (missing={missing})"
+                break
+            self._stop_evt.wait(ROSNODE_LIST_INTERVAL)
+        else:
+            error = "Manager is shutting down"
+        process.stop()
+        return error
 
     # ------------------------------------------------------------------ health
 
     def _health_loop(self) -> None:
         while not self._stop_evt.is_set() and not rospy.is_shutdown():
             self._refresh_running_nodes()
-            time.sleep(HEALTH_POLL_INTERVAL)
+            with self._lock:
+                if not self.starting and not self.stopping:
+                    previous_mode = self.mode
+                    self._update_observed_state()
+                    if previous_mode == MODE_ERROR:
+                        self.mode = MODE_ERROR
+            self._stop_evt.wait(HEALTH_POLL_INTERVAL)
 
-    def _refresh_running_nodes(self) -> None:
+    def _refresh_running_nodes(self) -> bool:
+        with self._refresh_lock:
+            return self._read_registry()
+
+    def _read_registry(self) -> bool:
+        known = True
         try:
             out = subprocess.check_output(
                 ["rosnode", "list"], stderr=subprocess.DEVNULL, timeout=3.0,
             ).decode("utf-8", errors="replace")
             running = set(line.strip() for line in out.splitlines() if line.strip())
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            known = False
             running = set()
         with self._running_nodes_lock:
             self._running_nodes = running
+        return known
 
     def _recover_state(self) -> None:
         """If manager itself was restarted while children are still running,
         figure out current state from rosnode list."""
-        all_ready = True
-        any_running = False
-        for name in self.launch_order:
-            nodes = self.launches[name].get("nodes", [])
-            if not nodes:
-                continue
-            present = sum(1 for n in nodes if n in self._running_nodes)
-            if present == 0:
-                all_ready = False
-            elif present < len(nodes):
-                all_ready = False
-                any_running = True
-            else:
-                any_running = True
         with self._lock:
-            if all_ready and any_running:
-                self.is_active = True
-                self.mode = MODE_READY
-            elif any_running:
-                self.is_active = False
-                self.mode = MODE_ERROR
-                self.last_error = "Recovered with partial nodes running (manager did not own them)"
+            self._update_observed_state()
+            if self.mode == "partial":
+                self.last_error = "Recovered with external nodes running"
                 self.last_error_seq += 1
-            else:
-                self.is_active = False
-                self.mode = MODE_IDLE
+
+    def _update_observed_state(self):
+        states = [self._check_subsystem(name) for name in self.launch_order]
+        self.is_active = all(state == ST_READY for state in states)
+        if self.is_active:
+            self.mode = MODE_READY
+        elif any(states) or any(p.has_group() for p in self.processes.values()):
+            self.mode = "partial"
+        else:
+            self.mode = MODE_IDLE
 
     # ------------------------------------------------------------------ status
 
     def _check_subsystem(self, launch_name: str) -> int:
         nodes = self.launches[launch_name].get("nodes", [])
         if not nodes:
-            return ST_NOT_RUNNING
+            return ST_READY if self.processes[launch_name].is_alive() else ST_NOT_RUNNING
         with self._running_nodes_lock:
             present = sum(1 for n in nodes if n in self._running_nodes)
         if present == 0:
@@ -763,30 +790,14 @@ class NodeManager:
                 return False
             return time.time() - self.mavros_state_rx_time <= MAVROS_STATE_MAX_AGE_SEC
 
-    def _log_stop_interlock_after_start(self) -> None:
-        state_text = self._format_mavros_state()
-        with self._lock:
-            armed = self.armed
-            mavros_state_seen = self._mavros_state_seen
-        if not mavros_state_seen:
-            self.log.warning(
-                "All launches ready; backend Stop disabled until MAVROS state is received; %s",
-                state_text,
-            )
-        elif armed:
-            self.log.warning(
-                "All launches ready; backend Stop disabled because aircraft is armed/flying; %s",
-                state_text,
-            )
-        else:
-            self.log.info(
-                "All launches ready; backend Stop allowed because aircraft is not armed; %s",
-                state_text,
-            )
-
     def _shutdown_hook(self) -> None:
         self.log.info("ROS shutdown received; tearing down children")
         self._stop_evt.set()
+        with self._operation_lock:
+            self.cmd_queue.put_nowait(None)
+            self._cleanup_children()
+
+    def _cleanup_children(self):
         for name in reversed(self.launch_order):
             try:
                 self.processes[name].stop(grace_sec=2.0)

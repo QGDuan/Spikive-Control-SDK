@@ -1,0 +1,3 @@
+<launch>
+  <test test-name="manager_lifecycle" pkg="spikive_control_sdk" type="manager_test.py" time-limit="180"/>
+</launch>

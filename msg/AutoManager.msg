@@ -3,7 +3,7 @@
 
 Header header          # 标准的ROS消息头部，包含时间戳和帧ID
 string drone_id        # 当前 Manager 管理的无人机编号，必须与 topic /drone_{id}_... 一致
-string mode            # 自动化模式名称（"idle" / "starting" / "ready" / "stopping" / "error"）
+string mode            # 自动化模式名称（"idle" / "partial" / "starting" / "ready" / "stopping" / "error"）
 bool is_active         # 后端权威：所有 launch 全就绪后置 true
 bool starting          # 后端权威：start_all 进行中
 bool stopping          # 后端权威：shutdown_all 进行中
