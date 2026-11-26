@@ -1,34 +1,34 @@
 #!/bin/bash
 
-
 sleep 3
-
-
-# Step 1: Source your custom ROS workspace
-echo "Step 1: Sourcing your custom ROS workspace..."
-source ~/ego_ws/devel/setup.bash
-if [ $? -eq 0 ]; then
-echo "Custom ROS workspace sourced successfully."
-else
-echo "Failed to source custom ROS workspace. Exiting."
-exit 1
+if ! source /opt/ros/noetic/setup.bash ||
+   ! source "$HOME/ego_ws/devel/setup.bash" --extend ||
+   ! source "$HOME/driver_ws/devel/setup.bash" --extend; then
+    echo 'Spikive startup: failed to load the ROS workspaces.' >&2
+    exit 1
 fi
 
+launch_tab() {
+    local title=$1
+    shift
+    gnome-terminal --tab --title="$title" -- bash -c '"$@"; exec bash' bash "$@"
+}
 
-# Launch the first ROS launch file
+sdk_dir=$(rospack find spikive_control_sdk) || exit 1
+manager_config="$sdk_dir/config/manager/launch_config_airy.yaml"
+launch_tab "Spikive Control SDK" roslaunch spikive_control_sdk spikive_control_sdk.launch \
+    drone_id:=2 enable_manager:=true "manager_config:=$manager_config"
 
 sleep 5
-# Launch the fifth ROS launch file
-gnome-terminal --tab  -- bash -c "source /home/colman/driver_ws/devel/setup.bash && roslaunch visual_pointcloud visual_pointcloud.launch; exec bash"
+launch_tab "Foxglove Bridge" roslaunch foxglove_bridge foxglove_bridge.launch _drone_id:=2
 
-
-sleep 2
-# Launch the fifth ROS launch file
-gnome-terminal --tab  -- bash -c "source /home/colman/driver_ws/devel/setup.bash && roslaunch usb_gimbal_camera usb_camera.launch; exec bash"
-
-sleep 2
-# Launch the fifth ROS launch file
-gnome-terminal --tab  -- bash -c "roslaunch foxglove_bridge foxglove_bridge.launch _drone_id:=2; exec bash"
-
-# Launch all Spikive Control SDK modules.
-gnome-terminal --tab --title="Spikive Control SDK" -- bash -c 'source /opt/ros/noetic/setup.bash && source /home/colman/driver_ws/devel/setup.bash && exec roslaunch spikive_control_sdk spikive_control_sdk.launch drone_id:=2 enable_manager:=true manager_config:=$(rospack find spikive_control_sdk)/config/manager/launch_config_airy.yaml'
+camera_device=${SPIKIVE_CAMERA_DEVICE:-/dev/video0}
+if [[ ! -c "$camera_device" ]]; then
+    printf 'Spikive startup: skipping USB camera because %s is missing.\n' "$camera_device" >&2
+elif ! roslaunch --args /gimbal_image_rotate usb_gimbal_camera usb_camera.launch \
+        "video_device:=$camera_device" >/dev/null; then
+    printf 'Spikive startup: skipping USB camera because gimbal_image_rotate_node is unavailable.\n' >&2
+else
+    launch_tab "Spikive USB Camera" roslaunch usb_gimbal_camera usb_camera.launch \
+        "video_device:=$camera_device"
+fi
